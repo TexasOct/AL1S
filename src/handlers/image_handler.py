@@ -6,6 +6,7 @@ from typing import Optional, List
 from telegram import Update
 from telegram.ext import ContextTypes
 from loguru import logger
+import time
 
 from .base_handler import BaseHandler
 from ..services.ascii2d_service import Ascii2DService
@@ -30,7 +31,7 @@ class ImageHandler(BaseHandler):
             (update.message.photo or update.message.document)
         )
     
-    def _format_image_analysis(self, analysis_text: str, search_results: List[ImageSearchResult] = None) -> str:
+    def _format_image_analysis(self, analysis_text: str, search_results: List[ImageSearchResult] = None, role: str = "user") -> str:
         """格式化图片分析结果，添加Telegram富文本支持"""
         if not analysis_text:
             return "无法分析图片内容"
@@ -67,6 +68,62 @@ class ImageHandler(BaseHandler):
         
         return response_text
     
+    def _get_image_placeholder_message(self, role) -> str:
+        """根据角色生成个性化的图片分析占位信息"""
+        if not role or not hasattr(role, 'name'):
+            return "🖼️ 正在分析图片中..."
+        
+        # 根据角色名称生成个性化占位信息
+        role_name = role.name.lower()
+        
+        if "爱丽丝" in role_name or "alice" in role_name:
+            placeholders = [
+                "🌸 爱丽丝正在仔细观察图片...",
+                "🎀 让我看看这是什么图片呢...",
+                "✨ 正在用心分析图片内容...",
+                "💭 这张图片很有趣，分析中...",
+            ]
+        elif "女仆" in role_name:
+            placeholders = [
+                "🎀 女仆正在为您分析图片...",
+                "🌹 恭敬地检查图片内容中...",
+                "💝 用心观察图片，请稍候...",
+                "✨ 为您仔细分析这张图片...",
+            ]
+        elif "kei" in role_name or "Kei" in role_name:
+            placeholders = [
+                "⚡ Kei正在扫描图片数据...",
+                "🔥 分析图片特征中...",
+                "🎯 识别图片内容，请稍候...",
+                "💪 全力分析图片信息...",
+            ]
+        elif "游戏" in role_name or "玩家" in role_name:
+            placeholders = [
+                "🎮 正在识别游戏截图...",
+                "🕹️ 分析图片攻略信息...",
+                "🎲 检测图片游戏元素...",
+                "🏆 搜索图片相关信息...",
+            ]
+        elif "助手" in role_name or "AI" in role_name:
+            placeholders = [
+                "🤖 AI正在处理图片数据...",
+                "💻 分析图片内容和特征...",
+                "🔍 识别图片中的元素...",
+                "⚙️ 图像识别系统运行中...",
+            ]
+        else:
+            # 默认占位信息
+            placeholders = [
+                f"🖼️ {role.name}正在分析图片...",
+                f"👀 {role.name}仔细观察中...",
+                f"🔍 {role.name}识别图片内容...",
+            ]
+        
+        # 随机选择一个占位信息（简单轮换）
+        import time
+        index = int(time.time()) % len(placeholders)
+        return placeholders[index]
+    
     async def _send_formatted_response(self, update, text: str):
         """发送格式化的响应"""
         try:
@@ -89,58 +146,114 @@ class ImageHandler(BaseHandler):
                 logger.error(f"发送纯文本也失败: {e2}")
                 await update.message.reply_text("抱歉，消息发送失败，请稍后再试。")
     
-    async def handle(self, update, context):
+    async def handle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """处理图片消息"""
         try:
-            # 记录处理开始
-            self.log_handling(update, "图片消息")
+            # 提取消息信息
+            message_info = self.extract_message_info(update)
+            if not message_info:
+                logger.error("无法提取消息信息")
+                return False
+                
+            user_id = message_info["user_id"]
+            chat_id = message_info["chat_id"]
+            message = message_info["message"]
             
-            # 获取用户信息
-            user_id = update.effective_user.id
-            chat_id = update.effective_chat.id
-            
-            # 获取图片文件
-            photo = update.message.photo[-1]  # 获取最大尺寸的图片
-            photo_file = await context.bot.get_file(photo.file_id)
-            
-            # 下载图片数据
-            image_data = await photo_file.download_as_bytearray()
-            image_bytes = bytes(image_data)
-            
-            # 记录用户消息
-            user_message = Message(
-                role="user",
-                content="[图片]",
-                timestamp=update.message.date.timestamp()
-            )
-            await self.conversation_service.add_message(user_id, chat_id, user_message)
-            
-            # 分析图片内容
-            analysis_text = await self.openai_service.analyze_image(
-                photo_file.file_path,
-                "请描述这张图片的内容，包括主要元素、风格、可能的来源等信息"
+            # 获取或创建对话
+            conversation = self.conversation_service.get_conversation(
+                user_id=user_id,
+                chat_id=chat_id
             )
             
-            # 搜索相似图片
-            search_results = await self.ascii2d_service.search_by_image_file(image_bytes)
+            # 获取当前角色
+            role = conversation.role
+            if not role:
+                # 如果没有设置角色，使用默认角色
+                role = self.conversation_service.get_role(user_id, chat_id)
+                if not role:
+                    # 如果还是没有角色，创建一个默认角色
+                    default_role_name = "AI助手"
+                    self.conversation_service.set_role(user_id, chat_id, default_role_name)
+                    role = self.conversation_service.get_role(user_id, chat_id)
             
-            # 格式化响应
-            formatted_response = self._format_image_analysis(analysis_text, search_results)
-            
-            # 发送响应
-            await self._send_formatted_response(update, formatted_response)
-            
-            # 记录AI响应
-            ai_message = Message(
-                role="assistant",
-                content=formatted_response,
-                timestamp=update.message.date.timestamp()
+            # 添加用户消息到对话
+            self.conversation_service.add_message(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=message
             )
-            await self.conversation_service.add_message(user_id, chat_id, ai_message)
             
+            # 先发送个性化占位信息
+            placeholder_text = self._get_image_placeholder_message(role)
+            placeholder_message = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=placeholder_text,
+                reply_to_message_id=update.message.message_id
+            )
+            
+            try:
+                # 获取图片文件
+                photo_file = update.message.photo[-1]  # 获取最高分辨率的图片
+                image_data = await photo_file.download_as_bytearray()
+                
+                # 转换为bytes
+                image_bytes = bytes(image_data)
+                
+                # 分析图片
+                analysis_result = await self.openai_service.analyze_image(image_bytes)
+                
+                # 搜索图片来源
+                search_results = await self.ascii2d_service.search_by_image_file(image_bytes)
+                
+                # 格式化响应
+                formatted_response = self._format_image_analysis(analysis_result, search_results, role)
+                
+                # 编辑占位信息，替换为实际响应
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=placeholder_message.message_id,
+                    text=formatted_response,
+                    parse_mode='HTML'
+                )
+                
+                # 添加机器人响应到对话
+                bot_message = Message(
+                    role="assistant",
+                    content=f"图片分析：{analysis_result}\n\n图片来源搜索：{len(search_results)} 个结果",
+                    timestamp=time.time()
+                )
+                self.conversation_service.add_message(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message=bot_message
+                )
+                
+                logger.info(f"成功处理用户 {user_id} 的图片")
+                return True
+                
+            except Exception as e:
+                # 如果图片处理失败，编辑占位信息为错误消息
+                error_message = f"❌ 处理图片时出现错误：{str(e)}"
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=placeholder_message.message_id,
+                    text=error_message
+                )
+                logger.error(f"图片处理失败: {e}")
+                return False
+                
         except Exception as e:
             logger.error(f"处理图片消息失败: {e}")
-            await update.message.reply_text("抱歉，处理图片时出现错误，请稍后再试。")
+            # 尝试发送错误消息
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ 处理图片时出现错误，请稍后重试。",
+                    reply_to_message_id=update.message.message_id
+                )
+            except Exception as send_error:
+                logger.error(f"发送错误消息失败: {send_error}")
+            return False
     
     async def _get_photo_file(self, update: Update):
         """获取图片文件"""

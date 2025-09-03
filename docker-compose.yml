@@ -1,0 +1,54 @@
+services:
+  al1s-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: al1s-bot
+    restart: always
+
+    # 挂载配置文件
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./logs:/app/logs
+
+    # 环境变量
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+        reservations:
+          memory: 256M
+          cpus: "0.2"
+
+    # 网络配置
+    networks:
+      - al1s-bot-network
+
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  al1s-bot-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local

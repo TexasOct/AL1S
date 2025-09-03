@@ -3,15 +3,14 @@
 """
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Optional
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
-import yaml
+import tomllib
 
 
 class OpenAIConfig(BaseModel):
     """OpenAI配置"""
-    api_key: str = Field(..., description="OpenAI API密钥")
+    api_key: str = Field("", description="OpenAI API密钥")
     base_url: str = Field("https://api.openai.com/v1", description="OpenAI API基础URL")
     model: str = Field("gpt-4o-mini", description="使用的模型名称")
     max_tokens: int = Field(2000, description="最大生成token数")
@@ -21,8 +20,8 @@ class OpenAIConfig(BaseModel):
 
 class TelegramConfig(BaseModel):
     """Telegram配置"""
-    bot_token: str = Field(..., description="Telegram机器人token")
-    webhook_url: Optional[str] = Field(None, description="Webhook URL（可选）")
+    bot_token: str = Field("", description="Telegram机器人token")
+    webhook_url: Optional[str] = Field("", description="Webhook URL（可选）")
     webhook_port: int = Field(8443, description="Webhook端口")
 
 
@@ -42,48 +41,67 @@ class RoleConfig(BaseModel):
     farewell: str = Field(..., description="角色告别语")
 
 
-class AppConfig(BaseSettings):
+class AppConfig:
     """应用配置"""
-    openai: OpenAIConfig
-    telegram: TelegramConfig
-    ascii2d: Ascii2DConfig
-    
-    # 角色配置
-    roles: Dict[str, RoleConfig] = Field(default_factory=dict, description="角色配置字典")
-    default_role: str = Field("天童爱丽丝", description="默认角色名称")
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        env_nested_delimiter = "__"
+
     
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # 加载角色配置文件
-        self._load_roles_config()
+        # 初始化属性
+        self.roles = {}
+        self.default_role = "天童爱丽丝"
+        
+        # 先加载统一配置文件
+        config_data = self._load_unified_config()
+        
+        # 从TOML配置中提取各个配置部分
+        openai_config = config_data.get('openai', {}) if config_data else {}
+        telegram_config = config_data.get('telegram', {}) if config_data else {}
+        ascii2d_config = config_data.get('ascii2d', {}) if config_data else {}
+        
+        # 初始化各个配置对象，使用默认值填充缺失的配置
+        self.openai = OpenAIConfig(**openai_config)
+        self.telegram = TelegramConfig(**telegram_config)
+        self.ascii2d = Ascii2DConfig(**ascii2d_config)
+        
+        # 设置角色配置
+        if config_data and 'default_role' in config_data:
+            self.default_role = config_data['default_role']
+        
+        if config_data and 'roles' in config_data:
+            for role_data in config_data['roles']:
+                role_name = role_data['name']
+                self.roles[role_name] = RoleConfig(**role_data)
+        
+        # 验证必需配置
+        self._validate_config()
     
-    def _load_roles_config(self):
-        """加载角色配置文件"""
+    def _load_unified_config(self):
+        """加载统一配置文件"""
         try:
-            roles_file = Path(__file__).parent / "config" / "roles.yaml"
-            if roles_file.exists():
-                with open(roles_file, 'r', encoding='utf-8') as f:
-                    roles_data = yaml.safe_load(f)
+            config_file = Path(__file__).parent.parent / "config.toml"
+            if config_file.exists():
+                with open(config_file, 'rb') as f:
+                    config_data = tomllib.load(f)
                 
-                # 设置默认角色
-                if 'default_role' in roles_data:
-                    self.default_role = roles_data['default_role']
-                
-                # 加载角色配置
-                if 'roles' in roles_data:
-                    for role_name, role_data in roles_data['roles'].items():
-                        self.roles[role_name] = RoleConfig(**role_data)
-                
-                print(f"成功加载 {len(self.roles)} 个角色配置")
+                print(f"成功加载配置文件: {config_file}")
+                return config_data
             else:
-                print(f"角色配置文件不存在: {roles_file}")
+                print(f"配置文件不存在: {config_file}")
+                print("请复制 config/config.toml.example 为 config/config.toml 并填写配置信息")
+                return {}
         except Exception as e:
-            print(f"加载角色配置文件失败: {e}")
+            print(f"加载配置文件失败: {e}")
+            print("请检查配置文件格式是否正确")
+            return {}
+    
+    def _validate_config(self):
+        """验证必需配置"""
+        if not self.openai.api_key:
+            print("⚠️  警告: OpenAI API密钥未设置")
+        if not self.telegram.bot_token:
+            print("⚠️  警告: Telegram Bot Token未设置")
+        if not self.roles:
+            print("⚠️  警告: 未加载任何角色配置")
     
     def get_role(self, role_name: str) -> Optional[RoleConfig]:
         """获取指定角色配置"""

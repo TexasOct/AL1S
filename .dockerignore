@@ -1,0 +1,61 @@
+# Git相关
+.git
+.gitignore
+.gitattributes
+
+# Python缓存
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache
+.coverage
+
+# 虚拟环境
+.venv
+venv
+env
+
+# IDE文件
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+logs/
+
+# 配置文件（将通过挂载传入）
+.env
+.env.*
+config/.env
+src/config/roles.yaml
+
+# 文档
+README.md
+*.md
+docs/
+
+# 测试文件
+test/
+tests/
+*_test.py
+test_*.py
+
+# Docker相关
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# 其他
+*.tmp
+*.temp
+.cache

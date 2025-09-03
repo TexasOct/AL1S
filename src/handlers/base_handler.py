@@ -62,15 +62,19 @@ class BaseHandler(ABC):
         
         return None
     
-    def extract_message_info(self, update: Update) -> Optional[Message]:
-        """提取消息信息"""
+    def extract_message_info(self, update: Update) -> Optional[Dict]:
+        """提取消息信息，返回包含用户ID、聊天ID和消息内容的字典"""
         try:
             if update.message:
-                return Message(
-                    role="user",
-                    content=update.message.text or "",
-                    timestamp=update.message.date.timestamp() if update.message.date else time.time()
-                )
+                return {
+                    "user_id": update.effective_user.id if update.effective_user else None,
+                    "chat_id": update.effective_chat.id if update.effective_chat else None,
+                    "message": Message(
+                        role="user",
+                        content=update.message.text or "",
+                        timestamp=update.message.date.timestamp() if update.message.date else time.time()
+                    )
+                }
         except Exception as e:
             self.logger.error(f"提取消息信息失败: {e}")
         

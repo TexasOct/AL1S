@@ -33,80 +33,125 @@ class ChatHandler(BaseHandler):
     
     def _build_system_prompt(self, role) -> str:
         """构建系统提示词"""
+        html_instructions = """
+请使用以下HTML标签来格式化你的回复（仅使用这些标签）：
+- <b>文本</b> - 粗体
+- <i>文本</i> - 斜体  
+- <u>文本</u> - 下划线
+- <s>文本</s> - 删除线
+- <code>代码</code> - 行内代码
+- <pre>代码块</pre> - 代码块
+- <a href="链接">文本</a> - 链接
+
+不要使用其他HTML标签，不要使用Markdown语法。
+"""
+        
         if role and hasattr(role, 'personality'):
-            return f"你是{role.name}，{role.personality}。请用这个角色来回复用户。"
-        return "你是一个有用的AI助手。"
+            return f"你是{role.name}。{role.personality}请自然地回复用户，不要提及你的角色设定或规则。\n\n{html_instructions}"
+        return f"你是一个有用的AI助手，请自然地回复用户。\n\n{html_instructions}"
+    
+    def _get_placeholder_message(self, role) -> str:
+        """根据角色生成个性化的占位信息"""
+        if not role or not hasattr(role, 'name'):
+            return "🤔 正在思考中..."
+        
+        # 根据角色名称生成个性化占位信息
+        role_name = role.name.lower()
+        
+        if "爱丽丝" in role_name or "alice" in role_name:
+            placeholders = [
+                "🌸 爱丽丝正在思考呢...",
+                "💭 让我想想怎么回答你...",
+                "✨ 稍等一下，正在整理思路...",
+                "🎀 思考中，请稍候...",
+            ]
+        elif "女仆" in role_name:
+            placeholders = [
+                "🎀 女仆正在为您准备回复...",
+                "💝 请稍候，正在用心思考...",
+                "🌹 为您整理答案中...",
+                "✨ 恭敬地思考中...",
+            ]
+        elif "kei" in role_name or "Kei" in role_name:
+            placeholders = [
+                "⚡ Kei正在处理信息...",
+                "🔥 分析中，稍等片刻...",
+                "💪 正在组织语言...",
+                "🎯 思考最佳回复方案...",
+            ]
+        elif "游戏" in role_name or "玩家" in role_name:
+            placeholders = [
+                "🎮 正在加载回复...",
+                "🕹️ 思考攻略中...",
+                "🎲 分析情况，请稍候...",
+                "🏆 准备最佳策略...",
+            ]
+        elif "助手" in role_name or "AI" in role_name:
+            placeholders = [
+                "🤖 AI助手思考中...",
+                "💻 正在处理您的请求...",
+                "🔍 分析问题，准备回复...",
+                "⚙️ 系统思考中...",
+            ]
+        else:
+            # 默认占位信息
+            placeholders = [
+                f"💭 {role.name}正在思考...",
+                f"✨ {role.name}准备回复中...",
+                f"🌟 {role.name}整理思路中...",
+            ]
+        
+        # 随机选择一个占位信息（简单轮换）
+        import time
+        index = int(time.time()) % len(placeholders)
+        return placeholders[index]
     
     def _format_llm_response(self, text: str) -> str:
-        """格式化LLM返回的内容，使其符合Telegram API实体规范"""
+        """清理LLM返回的HTML内容，确保只包含Telegram支持的标签"""
         if not text:
             return text
         
         import re
         
-        # 1. 格式化代码块 - 使用 <pre> 标签
-        # 匹配 ```language\ncode``` 或 ```code``` 格式
-        text = re.sub(r'```(\w+)?\n(.*?)```', r'<pre>\2</pre>', text, flags=re.DOTALL)
+        # 清理不支持的HTML标签
+        # Telegram支持的HTML标签: <b>, <i>, <u>, <s>, <code>, <pre>, <a>
+        unsupported_patterns = [
+            r'</?dyn[^>]*>',     # 移除 <dyn> 标签
+            r'</?span[^>]*>',    # 移除 <span> 标签
+            r'</?div[^>]*>',     # 移除 <div> 标签
+            r'</?p[^>]*>',       # 移除 <p> 标签
+            r'</?strong[^>]*>',  # 移除 <strong> 标签（LLM应该用 <b>）
+            r'</?em[^>]*>',      # 移除 <em> 标签（LLM应该用 <i>）
+            r'</?h[1-6][^>]*>',  # 移除标题标签
+            r'</?ul[^>]*>',      # 移除列表标签
+            r'</?ol[^>]*>',      # 移除有序列表标签
+            r'</?li[^>]*>',      # 移除列表项标签
+            r'</?br[^>]*>',      # 移除换行标签
+            r'</?hr[^>]*>',      # 移除分隔线标签
+        ]
         
-        # 2. 格式化行内代码 - 使用 <code> 标签
-        # 匹配 `code` 格式，但排除已经处理的代码块
-        # 使用更简单的方法，先处理代码块，再处理行内代码
-        text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+        # 先保护支持的标签
+        supported_tags = ['b', 'i', 'u', 's', 'code', 'pre', 'a']
+        protected_content = {}
+        protect_counter = 0
         
-        # 3. 格式化粗体 - 使用 <b> 标签
-        # 匹配 **text** 格式
-        text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
+        # 保护支持的标签
+        for tag in supported_tags:
+            pattern = f'<{tag}[^>]*>.*?</{tag}>'
+            matches = re.findall(pattern, text, flags=re.DOTALL | re.IGNORECASE)
+            for match in matches:
+                placeholder = f"__PROTECTED_{protect_counter}__"
+                protected_content[placeholder] = match
+                text = text.replace(match, placeholder, 1)
+                protect_counter += 1
         
-        # 4. 格式化斜体 - 使用 <i> 标签
-        # 匹配 *text* 格式，但排除粗体标记
-        # 使用更简单的方法，避免复杂的后向查找
-        text = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', text)
+        # 移除不支持的标签
+        for pattern in unsupported_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
         
-        # 5. 格式化删除线 - 使用 <s> 标签
-        # 匹配 ~~text~~ 格式
-        text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text)
-        
-        # 6. 格式化列表
-        lines = text.split('\n')
-        formatted_lines = []
-        in_list = False
-        
-        for line in lines:
-            stripped = line.strip()
-            
-            # 无序列表
-            if stripped.startswith('- '):
-                if not in_list:
-                    in_list = True
-                line = f"• {stripped[2:]}"
-            # 有序列表
-            elif re.match(r'^\d+\.\s', stripped):
-                if not in_list:
-                    in_list = True
-                line = f"<b>{stripped}</b>"
-            # 空行或非列表项
-            elif stripped == '':
-                in_list = False
-            else:
-                in_list = False
-            
-            formatted_lines.append(line)
-        
-        text = '\n'.join(formatted_lines)
-        
-        # 7. 格式化标题（如果LLM返回了Markdown标题）
-        # 匹配 # 标题 格式
-        text = re.sub(r'^#\s+(.+)$', r'<b>📋 \1</b>', text, flags=re.MULTILINE)
-        text = re.sub(r'^##\s+(.+)$', r'<b>📌 \1</b>', text, flags=re.MULTILINE)
-        text = re.sub(r'^###\s+(.+)$', r'<b>📍 \1</b>', text, flags=re.MULTILINE)
-        
-        # 8. 格式化引用块
-        # 匹配 > 引用 格式
-        text = re.sub(r'^>\s+(.+)$', r'<i>💬 \1</i>', text, flags=re.MULTILINE)
-        
-        # 9. 格式化链接（如果LLM返回了Markdown链接）
-        # 匹配 [text](url) 格式
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+        # 恢复保护的标签
+        for placeholder, original in protected_content.items():
+            text = text.replace(placeholder, original)
         
         return text
     
@@ -118,13 +163,10 @@ class ChatHandler(BaseHandler):
         # 首先格式化LLM返回的内容
         text = self._format_llm_response(text)
         
-        # 添加角色标识
-        if role_name:
-            text = f"<b>🤖 {role_name}</b>\n\n{text}"
+        # 移除角色标识显示，让回复更自然
+        # 角色信息已经在系统提示词中处理，不需要在用户看到的回复中显示
         
-        # # 添加分隔线
-        # if role_name:
-        #     text += "\n\n" + "─" * 30
+
         
         return text
     
@@ -150,65 +192,124 @@ class ChatHandler(BaseHandler):
                 logger.error(f"发送纯文本也失败: {e2}")
                 await update.message.reply_text("抱歉，消息发送失败，请稍后再试。")
     
-    async def handle(self, update, context):
+    async def handle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """处理文本消息"""
         try:
-            # 记录处理开始
-            self.log_handling(update, "文本消息")
+            # 提取消息信息
+            message_info = self.extract_message_info(update)
+            if not message_info:
+                logger.error("无法提取消息信息")
+                return False
+                
+            user_id = message_info["user_id"]
+            chat_id = message_info["chat_id"]
+            message = message_info["message"]
             
-            # 获取用户信息
-            user_id = update.effective_user.id
-            chat_id = update.effective_chat.id
-            message_text = update.message.text
-            
-            # 获取或创建对话（注意：这些方法不是异步的）
-            conversation = self.conversation_service.get_conversation(user_id, chat_id)
-            current_role = self.conversation_service.get_role(user_id, chat_id)
-            
-            # 记录用户消息
-            user_message = Message(
-                role="user",
-                content=message_text,
-                timestamp=update.message.date.timestamp()
+            # 获取或创建对话
+            conversation = self.conversation_service.get_conversation(
+                user_id=user_id,
+                chat_id=chat_id
             )
-            self.conversation_service.add_message(user_id, chat_id, user_message)
             
-            # 构建系统提示词（注意：这个方法现在是异步的）
-            system_prompt = self._build_system_prompt(current_role)
+            # 获取当前角色
+            role = conversation.role
+            if not role:
+                # 如果没有设置角色，使用默认角色
+                role = self.conversation_service.get_role(user_id, chat_id)
+                if not role:
+                    # 如果还是没有角色，创建一个默认角色
+                    default_role_name = "AI助手"
+                    self.conversation_service.set_role(user_id, chat_id, default_role_name)
+                    role = self.conversation_service.get_role(user_id, chat_id)
             
-            # 获取对话历史
-            messages = conversation.messages if hasattr(conversation, 'messages') else []
-            
-            # 构建OpenAI请求消息
-            openai_messages = [{"role": "system", "content": system_prompt}]
-            
-            # 添加对话历史（限制长度）
-            for msg in messages[-10:]:  # 只保留最近10条消息
-                openai_messages.append({
-                    "role": msg.role,
-                    "content": msg.content
-                })
-            
-            # 调用OpenAI API
-            response_text = await self.openai_service.chat_completion(openai_messages)
-            
-            # 检查响应是否有效
-            if not response_text or not isinstance(response_text, str):
-                logger.error(f"OpenAI API 返回无效响应: {type(response_text)} = {response_text}")
-                response_text = "抱歉，我无法生成有效的回复，请稍后再试。"
-            
-            # 记录AI响应
-            ai_message = Message(
-                role="assistant",
-                content=response_text,
-                timestamp=update.message.date.timestamp()
+            # 添加用户消息到对话
+            self.conversation_service.add_message(
+                user_id=user_id,
+                chat_id=chat_id,
+                message=message
             )
-            self.conversation_service.add_message(user_id, chat_id, ai_message)
             
-            # 发送格式化的响应
-            role_name = current_role.name if current_role else None
-            await self._send_response(update, context, response_text, role_name)
+            # 先发送个性化占位信息
+            placeholder_text = self._get_placeholder_message(role)
+            placeholder_message = await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=placeholder_text,
+                reply_to_message_id=update.message.message_id
+            )
             
+            try:
+                # 构建系统提示词
+                system_prompt = self._build_system_prompt(role)
+                
+                # 构建完整消息列表
+                messages = [{"role": "system", "content": system_prompt}]
+                
+                # 添加对话历史（限制长度）
+                for msg in conversation.messages[-10:]:  # 只保留最近10条消息
+                    messages.append({"role": msg.role, "content": msg.content})
+                
+                # 调用OpenAI API
+                response_text = await self.openai_service.chat_completion(messages)
+                
+                # 验证响应
+                if not response_text or not isinstance(response_text, str):
+                    response_text = "抱歉，我无法生成有效的响应，请稍后重试。"
+                
+                # 格式化响应
+                formatted_response = self._format_response(response_text)
+                
+                # 编辑占位信息，替换为实际响应
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=placeholder_message.message_id,
+                        text=formatted_response,
+                        parse_mode='HTML'
+                    )
+                except Exception as html_error:
+                    # 如果HTML解析失败，尝试发送纯文本
+                    logger.warning(f"HTML解析失败，回退到纯文本: {html_error}")
+                    await context.bot.edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=placeholder_message.message_id,
+                        text=response_text  # 使用原始文本，不进行HTML格式化
+                    )
+                
+                # 添加机器人响应到对话
+                bot_message = Message(
+                    role="assistant",
+                    content=response_text,
+                    timestamp=time.time()
+                )
+                self.conversation_service.add_message(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message=bot_message
+                )
+                
+                logger.info(f"成功处理用户 {user_id} 的消息")
+                return True
+                
+            except Exception as e:
+                # 如果LLM处理失败，编辑占位信息为错误消息
+                error_message = f"❌ 处理消息时出现错误：{str(e)}"
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=placeholder_message.message_id,
+                    text=error_message
+                )
+                logger.error(f"LLM处理失败: {e}")
+                return False
+                
         except Exception as e:
             logger.error(f"处理文本消息失败: {e}")
-            await update.message.reply_text("抱歉，处理消息时出现错误，请稍后再试。")
+            # 尝试发送错误消息
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ 处理消息时出现错误，请稍后重试。",
+                    reply_to_message_id=update.message.message_id
+                )
+            except Exception as send_error:
+                logger.error(f"发送错误消息失败: {send_error}")
+            return False

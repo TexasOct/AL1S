@@ -1,8 +1,7 @@
 """
 Telegram机器人主类
 """
-import asyncio
-from typing import List, Optional
+from typing import Optional
 from telegram import Update, BotCommand
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from loguru import logger
