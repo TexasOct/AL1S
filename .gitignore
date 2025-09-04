@@ -1,5 +1,6 @@
 .idea*
 venv
+.venv
 __pycache__/
 .DS_Store
 .vscode
@@ -7,3 +8,4 @@ logs/
 .env
 # 配置文件
 config.toml
+data/

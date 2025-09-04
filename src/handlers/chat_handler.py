@@ -11,16 +11,26 @@ import re
 from .base_handler import BaseHandler
 from ..services.openai_service import OpenAIService
 from ..services.conversation_service import ConversationService
+from ..services.mcp_service import MCPService
+from ..services.rag_service import RAGService
+from ..services.knowledge_extractor import KnowledgeExtractor
 from ..models import Message
 
 
 class ChatHandler(BaseHandler):
     """聊天处理器"""
     
-    def __init__(self, openai_service: OpenAIService, conversation_service: ConversationService):
+    def __init__(self, openai_service: OpenAIService, conversation_service: ConversationService, 
+                 mcp_service: MCPService = None, database_service=None, rag_service: RAGService = None):
         super().__init__("ChatHandler", "处理用户聊天消息")
         self.openai_service = openai_service
         self.conversation_service = conversation_service
+        self.mcp_service = mcp_service
+        self.database_service = database_service
+        self.rag_service = rag_service
+        
+        # 初始化知识提取器
+        self.knowledge_extractor = KnowledgeExtractor(openai_service) if rag_service else None
     
     def can_handle(self, update: Update) -> bool:
         """检查是否可以处理此更新"""
@@ -49,6 +59,30 @@ class ChatHandler(BaseHandler):
         if role and hasattr(role, 'personality'):
             return f"你是{role.name}。{role.personality}请自然地回复用户，不要提及你的角色设定或规则。\n\n{html_instructions}"
         return f"你是一个有用的AI助手，请自然地回复用户。\n\n{html_instructions}"
+    
+    def _build_system_prompt_with_rag(self, role, retrieved_knowledge) -> str:
+        """构建包含RAG知识的系统提示词"""
+        # 基础系统提示词
+        base_prompt = self._build_system_prompt(role)
+        
+        # 如果没有检索到知识，返回基础提示词
+        if not retrieved_knowledge:
+            return base_prompt
+        
+        # 构建知识上下文
+        knowledge_context = "\n\n=== 相关知识参考 ===\n"
+        for i, (knowledge_entry, score) in enumerate(retrieved_knowledge[:3], 1):  # 只使用前3个最相关的
+            knowledge_context += f"{i}. {knowledge_entry.title}\n"
+            knowledge_context += f"内容: {knowledge_entry.content}\n"
+            if knowledge_entry.keywords:
+                knowledge_context += f"关键词: {knowledge_entry.keywords}\n"
+            knowledge_context += f"相关性: {score:.2f}\n\n"
+        
+        knowledge_context += """请参考以上知识来回答用户的问题。如果相关知识能够帮助回答问题，请自然地融入到回复中。
+如果相关知识与用户问题不太相关，可以忽略。不要直接提及"根据我的知识库"或类似表述，要让回复显得自然。
+=== 知识参考结束 ===\n\n"""
+        
+        return base_prompt + knowledge_context
     
     def _get_placeholder_message(self, role) -> str:
         """根据角色生成个性化的占位信息"""
@@ -170,6 +204,66 @@ class ChatHandler(BaseHandler):
         
         return text
     
+    async def _learn_from_conversation(self, user_id: int, conversation_id: int, messages) -> None:
+        """从对话中学习知识"""
+        try:
+            # 检查是否启用自动学习
+            from ..config import config
+            if not config.rag.auto_learning:
+                return
+            
+            # 检查消息数量是否达到学习触发条件
+            if len(messages) < config.rag.learning_trigger_messages:
+                return
+            
+            # 获取最近的消息内容
+            recent_messages = messages[-config.rag.learning_trigger_messages:]
+            message_contents = [msg.content for msg in recent_messages if msg.content and msg.content.strip()]
+            
+            if not message_contents:
+                return
+            
+            # 提取知识
+            knowledge_items = await self.knowledge_extractor.extract_from_conversation(
+                messages=recent_messages,
+                user_id=user_id,
+                conversation_id=conversation_id
+            )
+            
+            # 保存提取的知识
+            saved_count = 0
+            for item in knowledge_items:
+                try:
+                    # 创建知识条目对象
+                    from ..services.rag_service import KnowledgeEntry
+                    knowledge_entry = KnowledgeEntry(
+                        user_id=item['user_id'],
+                        conversation_id=item['conversation_id'],
+                        title=item['title'],
+                        content=item['content'],
+                        summary=item.get('summary', item['title']),
+                        keywords=item.get('keywords', ''),
+                        category=item.get('category', 'conversation'),
+                        importance_score=item.get('importance_score', 0.5)
+                    )
+                    
+                    # 保存知识条目
+                    entry_id = await self.rag_service._save_knowledge_entry(knowledge_entry)
+                    if entry_id:
+                        knowledge_entry.id = entry_id
+                        # 生成向量嵌入
+                        await self.rag_service._generate_embedding(knowledge_entry)
+                        saved_count += 1
+                        
+                except Exception as e:
+                    logger.warning(f"保存知识条目失败: {e}")
+            
+            if saved_count > 0:
+                logger.info(f"从对话中学习并保存了 {saved_count} 个知识条目")
+                
+        except Exception as e:
+            logger.warning(f"从对话中学习知识失败: {e}")
+    
     async def _send_response(self, update, context, response_text: str, role_name: str = None):
         """发送格式化的响应"""
         try:
@@ -198,12 +292,41 @@ class ChatHandler(BaseHandler):
             # 提取消息信息
             message_info = self.extract_message_info(update)
             if not message_info:
-                logger.error("无法提取消息信息")
-                return False
+                logger.warning("无法提取消息信息或消息为空，跳过处理")
+                return True  # 返回True，因为这不是错误，只是跳过空消息
                 
             user_id = message_info["user_id"]
             chat_id = message_info["chat_id"]
             message = message_info["message"]
+            
+            # 记录用户到数据库
+            conversation_id = None
+            if self.database_service:
+                try:
+                    # 确保用户存在
+                    db_user_id = await self.database_service.ensure_user(
+                        telegram_user_id=user_id,
+                        username=update.effective_user.username,
+                        first_name=update.effective_user.first_name,
+                        last_name=update.effective_user.last_name
+                    )
+                    
+                    # 获取当前角色
+                    current_role = self.conversation_service.get_role(user_id, chat_id)
+                    role_name = current_role.name if current_role else "AI助手"
+                    
+                    # 确保对话存在
+                    conversation_id = await self.database_service.ensure_conversation(
+                        user_id=db_user_id,
+                        chat_id=chat_id,
+                        role_name=role_name
+                    )
+                    
+                    # 保存用户消息
+                    await self.database_service.save_message(conversation_id, message)
+                    
+                except Exception as e:
+                    logger.warning(f"数据库记录失败: {e}")  # 不影响主流程
             
             # 获取或创建对话
             conversation = self.conversation_service.get_conversation(
@@ -238,18 +361,48 @@ class ChatHandler(BaseHandler):
             )
             
             try:
-                # 构建系统提示词
-                system_prompt = self._build_system_prompt(role)
+                # RAG检索相关知识
+                retrieved_knowledge = []
+                if self.rag_service and message.content:
+                    try:
+                        knowledge_results = await self.rag_service.retrieve_knowledge(
+                            user_id=user_id,
+                            query=message.content,
+                            conversation_id=conversation_id
+                        )
+                        retrieved_knowledge = knowledge_results
+                        if retrieved_knowledge:
+                            logger.info(f"RAG检索到 {len(retrieved_knowledge)} 个相关知识")
+                    except Exception as e:
+                        logger.warning(f"RAG检索失败: {e}")
+                
+                # 构建系统提示词（包含RAG知识）
+                system_prompt = self._build_system_prompt_with_rag(role, retrieved_knowledge)
                 
                 # 构建完整消息列表
                 messages = [{"role": "system", "content": system_prompt}]
                 
                 # 添加对话历史（限制长度）
                 for msg in conversation.messages[-10:]:  # 只保留最近10条消息
-                    messages.append({"role": msg.role, "content": msg.content})
+                    # 确保消息内容不为空
+                    if msg.content and msg.content.strip():
+                        messages.append({"role": msg.role, "content": msg.content.strip()})
+                    else:
+                        logger.warning(f"跳过空消息: role={msg.role}, content='{msg.content}'")
                 
-                # 调用OpenAI API
-                response_text = await self.openai_service.chat_completion(messages)
+                # 获取可用的MCP工具
+                tools = None
+                if self.mcp_service:
+                    tools = self.mcp_service.get_tools_for_llm()
+                    if tools:
+                        logger.info(f"可用的MCP工具数量: {len(tools)}")
+                
+                # 设置对话ID用于工具调用记录
+                if conversation_id:
+                    self.openai_service.set_conversation_id(conversation_id)
+                
+                # 调用OpenAI API（支持工具调用）
+                response_text = await self.openai_service.chat_completion(messages, tools)
                 
                 # 验证响应
                 if not response_text or not isinstance(response_text, str):
@@ -286,6 +439,17 @@ class ChatHandler(BaseHandler):
                     chat_id=chat_id,
                     message=bot_message
                 )
+                
+                # 保存AI响应到数据库
+                if self.database_service and conversation_id:
+                    try:
+                        await self.database_service.save_message(conversation_id, bot_message)
+                    except Exception as e:
+                        logger.warning(f"保存AI响应失败: {e}")
+                
+                # RAG知识学习
+                if self.rag_service and self.knowledge_extractor and conversation_id:
+                    await self._learn_from_conversation(user_id, conversation_id, conversation.messages)
                 
                 logger.info(f"成功处理用户 {user_id} 的消息")
                 return True

@@ -66,12 +66,18 @@ class BaseHandler(ABC):
         """提取消息信息，返回包含用户ID、聊天ID和消息内容的字典"""
         try:
             if update.message:
+                # 提取消息文本，确保不为空
+                message_text = update.message.text or ""
+                if not message_text.strip():
+                    self.logger.warning(f"收到空消息: user_id={update.effective_user.id if update.effective_user else 'unknown'}")
+                    return None
+                
                 return {
                     "user_id": update.effective_user.id if update.effective_user else None,
                     "chat_id": update.effective_chat.id if update.effective_chat else None,
                     "message": Message(
                         role="user",
-                        content=update.message.text or "",
+                        content=message_text.strip(),
                         timestamp=update.message.date.timestamp() if update.message.date else time.time()
                     )
                 }

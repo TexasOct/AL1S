@@ -51,6 +51,91 @@ base_url = "https://ascii2d.net"
 bovw = false
 
 # ====================
+# iCloud 配置
+# ====================
+
+[icloud]
+# iCloud账号
+icloud_user = "your-icloud-user-here"
+# iCloud密码
+icloud_app_password = "your-icloud-app-password-here"
+
+# ====================
+# RAG (检索增强生成) 配置
+# ====================
+
+[rag]
+# 是否启用RAG功能
+enabled = true
+# 向量存储路径
+vector_store_path = "data/vector_store"
+# 嵌入模型类型
+# 选项: 
+#   - "tfidf": TF-IDF模型（轻量，快速）
+#   - "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2": 多语言语义模型（推荐中文）
+#   - "sentence-transformers/distiluse-base-multilingual-cased": 轻量多语言模型
+embedding_model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+# 最大知识条目数
+max_knowledge_entries = 10000
+# 相似度阈值 (降低阈值提高敏感度)
+similarity_threshold = 0.15
+# 检索返回的最大条目数
+top_k_retrieval = 8
+# 是否自动从对话中学习
+auto_learning = true
+# 学习触发的最小消息数 (降低阈值，更频繁学习)
+learning_trigger_messages = 2
+# 知识重要性阈值 (降低阈值提高学习敏感度)
+importance_threshold = 0.05
+# 是否使用LLM进行高级知识提取
+use_llm_extraction = true
+
+# ====================
+# MCP 配置
+# ====================
+
+[mcp]
+# MCP (Model Context Protocol) 配置
+enabled = true # 是否启用MCP功能
+
+# MCP服务器配置示例
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+args = [
+  "-y",
+  "@modelcontextprotocol/server-filesystem",
+  "/path/to/allowed/directory",
+]
+enabled = true
+
+[[mcp.servers]]
+name = "brave-search"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-brave-search"]
+enabled = false
+env = { BRAVE_API_KEY = "your-brave-api-key" }
+
+[[mcp.servers]]
+name = "github"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+enabled = false
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "your-github-token" }
+
+[[mcp.servers]]
+name = "sqlite"
+command = "npx"
+args = [
+  "-y",
+  "@modelcontextprotocol/server-sqlite",
+  "--db-path",
+  "/path/to/database.db",
+]
+enabled = false
+
+
+# ====================
 # 角色配置
 # ====================
 

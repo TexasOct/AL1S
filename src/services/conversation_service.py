@@ -12,10 +12,11 @@ from ..models import Conversation, Message, Role
 class ConversationService:
     """对话管理服务"""
     
-    def __init__(self):
+    def __init__(self, database_service=None):
         self.conversations: Dict[str, Conversation] = {}
         self.users: Dict[int, Dict[str, Any]] = {}
         self.roles: Dict[str, Role] = {}
+        self.database_service = database_service
         self._initialize_roles()
         logger.info("对话服务初始化完成")
     
@@ -113,6 +114,14 @@ class ConversationService:
             conversation = self.get_conversation(user_id, chat_id)
             conversation.role = role
             conversation.last_activity = time.time()
+            
+            # 更新角色使用统计
+            if self.database_service:
+                try:
+                    import asyncio
+                    asyncio.create_task(self.database_service.update_role_stats(role_name))
+                except Exception as e:
+                    logger.warning(f"更新角色统计失败: {e}")
             
             logger.info(f"用户 {user_id} 在聊天 {chat_id} 中设置角色为: {role_name}")
             return True

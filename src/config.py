@@ -41,6 +41,35 @@ class RoleConfig(BaseModel):
     farewell: str = Field(..., description="角色告别语")
 
 
+class MCPServerConfig(BaseModel):
+    """MCP服务器配置"""
+    name: str = Field(..., description="服务器名称")
+    command: str = Field(..., description="启动命令")
+    args: list[str] = Field(default_factory=list, description="命令参数")
+    env: dict[str, str] = Field(default_factory=dict, description="环境变量")
+    enabled: bool = Field(True, description="是否启用")
+
+
+class MCPConfig(BaseModel):
+    """MCP配置"""
+    enabled: bool = Field(True, description="是否启用MCP功能")
+    servers: list[MCPServerConfig] = Field(default_factory=list, description="MCP服务器列表")
+
+
+class RAGConfig(BaseModel):
+    """RAG配置"""
+    enabled: bool = Field(True, description="是否启用RAG功能")
+    vector_store_path: str = Field("data/vector_store", description="向量存储路径")
+    embedding_model: str = Field("tfidf", description="嵌入模型类型")
+    max_knowledge_entries: int = Field(10000, description="最大知识条目数")
+    similarity_threshold: float = Field(0.3, description="相似度阈值")
+    top_k_retrieval: int = Field(5, description="检索返回的最大条目数")
+    auto_learning: bool = Field(True, description="是否自动从对话中学习")
+    learning_trigger_messages: int = Field(3, description="学习触发的最小消息数")
+    importance_threshold: float = Field(0.1, description="知识重要性阈值")
+    use_llm_extraction: bool = Field(True, description="是否使用LLM进行高级知识提取")
+
+
 class AppConfig:
     """应用配置"""
 
@@ -57,11 +86,15 @@ class AppConfig:
         openai_config = config_data.get('openai', {}) if config_data else {}
         telegram_config = config_data.get('telegram', {}) if config_data else {}
         ascii2d_config = config_data.get('ascii2d', {}) if config_data else {}
+        mcp_config = config_data.get('mcp', {}) if config_data else {}
+        rag_config = config_data.get('rag', {}) if config_data else {}
         
         # 初始化各个配置对象，使用默认值填充缺失的配置
         self.openai = OpenAIConfig(**openai_config)
         self.telegram = TelegramConfig(**telegram_config)
         self.ascii2d = Ascii2DConfig(**ascii2d_config)
+        self.mcp = MCPConfig(**mcp_config)
+        self.rag = RAGConfig(**rag_config)
         
         # 设置角色配置
         if config_data and 'default_role' in config_data:

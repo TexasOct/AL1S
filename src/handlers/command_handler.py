@@ -11,17 +11,21 @@ import re
 from .base_handler import BaseHandler
 from ..services.conversation_service import ConversationService
 from ..services.openai_service import OpenAIService
+from ..services.mcp_service import MCPService
 from ..models import Command
+from ..utils.database_logger import log_user_action, log_system_event
 
 
 class CommandHandler(BaseHandler):
     """命令处理器"""
     
-    def __init__(self, conversation_service: ConversationService, openai_service: OpenAIService, image_handler=None):
+    def __init__(self, conversation_service: ConversationService, openai_service: OpenAIService, image_handler=None, mcp_service: MCPService = None, database_service=None):
         super().__init__("CommandHandler", "处理机器人命令")
         self.conversation_service = conversation_service
         self.openai_service = openai_service
         self.image_handler = image_handler
+        self.mcp_service = mcp_service
+        self.database_service = database_service
         self.commands = self._initialize_commands()
     
     def _initialize_commands(self) -> Dict[str, Command]:
@@ -97,6 +101,34 @@ class CommandHandler(BaseHandler):
                 usage="/test_search",
                 aliases=["test_search", "test"],
                 requires_args=False
+            ),
+            "/tools": Command(
+                name="tools",
+                description="显示可用的MCP工具",
+                usage="/tools",
+                aliases=["tools", "t"],
+                requires_args=False
+            ),
+            "/mcp_status": Command(
+                name="mcp_status",
+                description="显示MCP服务器状态",
+                usage="/mcp_status",
+                aliases=["mcp_status", "mcp"],
+                requires_args=False
+            ),
+            "/db_stats": Command(
+                name="db_stats",
+                description="显示数据库统计信息",
+                usage="/db_stats",
+                aliases=["db_stats", "db"],
+                requires_args=False
+            ),
+            "/my_stats": Command(
+                name="my_stats",
+                description="显示我的使用统计",
+                usage="/my_stats",
+                aliases=["my_stats", "me"],
+                requires_args=False
             )
         }
     
@@ -130,6 +162,17 @@ class CommandHandler(BaseHandler):
                     f"命令 {cmd.name} 需要参数\n用法: {cmd.usage}"
                 )
                 return False
+            
+            # 记录命令使用
+            log_user_action(
+                user_id=update.effective_user.id,
+                action=f"command_{cmd.name}",
+                details={
+                    "command": cmd.name,
+                    "args": args if args else None,
+                    "chat_id": update.effective_chat.id
+                }
+            )
             
             # 执行命令
             success = await self._execute_command(cmd, args, update, context)
@@ -179,6 +222,14 @@ class CommandHandler(BaseHandler):
                 return await self._handle_search_engines(update, context)
             elif cmd.name == "test_search":
                 return await self._handle_test_search(update, context)
+            elif cmd.name == "tools":
+                return await self._handle_tools(update, context)
+            elif cmd.name == "mcp_status":
+                return await self._handle_mcp_status(update, context)
+            elif cmd.name == "db_stats":
+                return await self._handle_db_stats(update, context)
+            elif cmd.name == "my_stats":
+                return await self._handle_my_stats(update, context)
             else:
                 await update.message.reply_text(f"命令 {cmd.name} 尚未实现")
                 return False
@@ -285,7 +336,19 @@ class CommandHandler(BaseHandler):
             # 设置新角色
             role_name = args.strip()
             conversation = self.conversation_service.get_conversation(user_id, chat_id)
+            current_role = conversation.role
+            
             if self.conversation_service.set_role(user_id, chat_id, role_name):
+                # 记录角色切换
+                log_user_action(
+                    user_id=user_id,
+                    action="role_switch",
+                    details={
+                        "old_role": current_role.name if current_role else None,
+                        "new_role": role_name,
+                        "chat_id": chat_id
+                    }
+                )
                 await update.message.reply_text(f"✅ 角色已设置为: {role_name}")
             else:
                 await update.message.reply_text(f"❌ 角色 {role_name} 不存在\n使用 /roles 查看可用角色")
@@ -706,3 +769,239 @@ class CommandHandler(BaseHandler):
 • 支持常见图片格式（JPG、PNG等）"""
         
         await self._send_formatted_response(update, engines_text, "搜索引擎信息")
+    
+    async def _handle_tools(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """处理tools命令"""
+        try:
+            if not self.mcp_service:
+                await update.message.reply_text(
+                    "❌ MCP功能未启用",
+                    parse_mode='HTML'
+                )
+                return False
+            
+            # 获取可用工具
+            tools = self.mcp_service.get_available_tools()
+            
+            if not tools:
+                await update.message.reply_text(
+                    "🔧 <b>可用工具</b>\n\n❌ 暂无可用的MCP工具\n\n"
+                    "请检查MCP服务器配置或使用 /mcp_status 查看服务器状态",
+                    parse_mode='HTML'
+                )
+                return True
+            
+            # 按服务器分组工具
+            tools_by_server = {}
+            for tool_name, tool_info in tools.items():
+                server_name = tool_info.get('server', '未知')
+                if server_name not in tools_by_server:
+                    tools_by_server[server_name] = []
+                tools_by_server[server_name].append((tool_name, tool_info.get('description', '无描述')))
+            
+            # 构建简洁的工具列表消息
+            tools_text = f"🔧 <b>可用的MCP工具 ({len(tools)}个)</b>\n\n"
+            
+            for server_name, server_tools in tools_by_server.items():
+                tools_text += f"📦 <b>{server_name}</b> ({len(server_tools)}个工具)\n"
+                
+                # 每个服务器最多显示前8个工具，避免消息过长
+                displayed_tools = server_tools[:8]
+                for tool_name, description in displayed_tools:
+                    # 截断过长的描述
+                    short_desc = description[:50] + "..." if len(description) > 50 else description
+                    tools_text += f"  • <code>{tool_name}</code> - {short_desc}\n"
+                
+                if len(server_tools) > 8:
+                    tools_text += f"  • ... 还有 {len(server_tools) - 8} 个工具\n"
+                
+                tools_text += "\n"
+            
+            tools_text += "💡 <b>使用提示:</b>\n"
+            tools_text += "• 直接描述需求，AI会自动选择工具\n"
+            tools_text += "• 支持文件操作、数据库查询等功能\n"
+            tools_text += "• 使用 <code>/mcp_status</code> 查看服务器状态"
+            
+            await update.message.reply_text(
+                tools_text,
+                parse_mode='HTML'
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"处理tools命令失败: {e}")
+            await update.message.reply_text("获取工具信息失败，请稍后再试。")
+            return False
+    
+    async def _handle_mcp_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """处理mcp_status命令"""
+        try:
+            if not self.mcp_service:
+                await update.message.reply_text(
+                    "❌ <b>MCP状态</b>\n\nMCP功能未启用\n\n"
+                    "要启用MCP功能，请在配置文件中设置 <code>mcp.enabled = true</code>",
+                    parse_mode='HTML'
+                )
+                return False
+            
+            # 获取服务器状态
+            server_status = self.mcp_service.get_server_status()
+            
+            if not server_status:
+                await update.message.reply_text(
+                    "🔧 <b>MCP服务器状态</b>\n\n❌ 没有配置任何MCP服务器\n\n"
+                    "请在配置文件中添加MCP服务器配置",
+                    parse_mode='HTML'
+                )
+                return True
+            
+            # 构建状态消息
+            status_text = "🔧 <b>MCP服务器状态</b>\n\n"
+            
+            connected_count = 0
+            total_tools = 0
+            
+            for server_name, status in server_status.items():
+                is_connected = status.get('connected', False)
+                tools_count = status.get('tools_count', 0)
+                
+                if is_connected:
+                    connected_count += 1
+                    total_tools += tools_count
+                    status_icon = "✅"
+                else:
+                    status_icon = "❌"
+                
+                status_text += f"{status_icon} <b>{server_name}</b>\n"
+                status_text += f"📂 命令: <code>{status.get('command', '未知')}</code>\n"
+                status_text += f"🔧 工具数量: {tools_count}\n"
+                
+                if tools_count > 0:
+                    tools_list = status.get('tools', [])
+                    status_text += f"🛠️ 工具: {', '.join(tools_list[:3])}"
+                    if len(tools_list) > 3:
+                        status_text += f" 等{len(tools_list)}个"
+                    status_text += "\n"
+                
+                status_text += "\n"
+            
+            # 添加总览
+            status_text += f"📊 <b>总览</b>\n"
+            status_text += f"• 服务器总数: {len(server_status)}\n"
+            status_text += f"• 已连接: {connected_count}\n"
+            status_text += f"• 可用工具: {total_tools}\n\n"
+            
+            if connected_count > 0:
+                status_text += "💡 使用 /tools 查看所有可用工具"
+            else:
+                status_text += "⚠️ 所有MCP服务器都未连接，请检查配置"
+            
+            await update.message.reply_text(
+                status_text,
+                parse_mode='HTML'
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"处理mcp_status命令失败: {e}")
+            await update.message.reply_text("获取MCP状态失败，请稍后再试。")
+            return False
+    
+    async def _handle_db_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """处理db_stats命令"""
+        try:
+            # 从bot实例获取数据库服务
+            if not hasattr(self, 'database_service'):
+                await update.message.reply_text(
+                    "❌ <b>数据库统计</b>\n\n数据库服务未启用",
+                    parse_mode='HTML'
+                )
+                return False
+            
+            # 获取统计信息
+            role_stats = await self.database_service.get_role_stats()
+            tool_stats = await self.database_service.get_tool_usage_stats()
+            
+            # 构建统计消息
+            stats_text = "📊 <b>数据库统计信息</b>\n\n"
+            
+            # 角色使用统计
+            if role_stats:
+                stats_text += "🎭 <b>角色使用统计</b>\n"
+                for stat in role_stats[:5]:  # 显示前5个
+                    stats_text += f"• {stat['role_name']}: {stat['usage_count']}次\n"
+                stats_text += "\n"
+            
+            # 工具使用统计
+            if tool_stats:
+                stats_text += "🛠️ <b>工具使用统计</b>\n"
+                for stat in tool_stats[:5]:  # 显示前5个
+                    success_rate = (stat['success_count'] / stat['usage_count'] * 100) if stat['usage_count'] > 0 else 0
+                    stats_text += f"• {stat['tool_name']}: {stat['usage_count']}次 ({success_rate:.1f}% 成功)\n"
+                stats_text += "\n"
+            else:
+                stats_text += "🛠️ <b>工具使用统计</b>\n暂无工具使用记录\n\n"
+            
+            stats_text += "💡 使用 /my_stats 查看您的个人统计信息"
+            
+            await update.message.reply_text(
+                stats_text,
+                parse_mode='HTML'
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"处理db_stats命令失败: {e}")
+            await update.message.reply_text("获取数据库统计失败，请稍后再试。")
+            return False
+    
+    async def _handle_my_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """处理my_stats命令"""
+        try:
+            # 从bot实例获取数据库服务
+            if not hasattr(self, 'database_service'):
+                await update.message.reply_text(
+                    "❌ <b>我的统计</b>\n\n数据库服务未启用",
+                    parse_mode='HTML'
+                )
+                return False
+            
+            user_id = update.effective_user.id
+            
+            # 获取用户统计信息
+            user_stats = await self.database_service.get_user_stats(user_id)
+            
+            if not user_stats:
+                await update.message.reply_text(
+                    "📊 <b>我的统计</b>\n\n暂无使用记录",
+                    parse_mode='HTML'
+                )
+                return True
+            
+            # 构建统计消息
+            stats_text = "📊 <b>我的使用统计</b>\n\n"
+            
+            if user_stats.get('username'):
+                stats_text += f"👤 用户名: @{user_stats['username']}\n"
+            
+            stats_text += f"💬 对话数量: {user_stats.get('conversation_count', 0)}\n"
+            stats_text += f"📝 消息数量: {user_stats.get('message_count', 0)}\n"
+            
+            if user_stats.get('current_role'):
+                stats_text += f"🎭 当前角色: {user_stats['current_role']}\n"
+            
+            if user_stats.get('last_activity'):
+                stats_text += f"⏰ 最后活动: {user_stats['last_activity']}\n"
+            
+            stats_text += "\n💡 使用 /db_stats 查看全局统计信息"
+            
+            await update.message.reply_text(
+                stats_text,
+                parse_mode='HTML'
+            )
+            return True
+            
+        except Exception as e:
+            logger.error(f"处理my_stats命令失败: {e}")
+            await update.message.reply_text("获取个人统计失败，请稍后再试。")
+            return False

@@ -6,33 +6,37 @@ services:
     container_name: al1s-bot
     restart: always
 
-    # 挂载配置文件
+    # 挂载配置文件和数据
     volumes:
       - ./config.toml:/app/config.toml:ro
       - ./logs:/app/logs
+      - ./data:/app/data
+      - npm-cache:/app/.npm
+      - npm-global:/app/.npm-global
 
     # 环境变量
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONDONTWRITEBYTECODE=1
+      - TZ=Asia/Shanghai
 
-    # 资源限制
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "0.5"
-        reservations:
-          memory: 256M
-          cpus: "0.2"
+    # 资源限制 - 增加内存以支持npm安装
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 1G
+    #       cpus: "1.0"
+    #     reservations:
+    #       memory: 512M
+    #       cpus: "0.5"
 
     # 网络配置
     networks:
       - al1s-bot-network
 
-    # 健康检查
+    # 健康检查 - 验证Python和Node.js环境
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "sh", "-c", "python -c 'import sys; sys.exit(0)' && node --version"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -51,4 +55,8 @@ networks:
 
 volumes:
   logs:
+    driver: local
+  npm-cache:
+    driver: local
+  npm-global:
     driver: local
