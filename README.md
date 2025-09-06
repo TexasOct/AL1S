@@ -104,9 +104,7 @@ AL1S-Bot/
 │   └── utils/             # 工具层
 │       └── database_logger.py     # 数据库日志
 ├── data/                  # 数据目录
-│   ├── bot.db            # SQLite数据库
 │   ├── init_db.sql       # 数据库初始化脚本
-│   └── vector_store/     # 向量存储目录
 ├── main.py               # 主程序入口
 ├── pyproject.toml        # 项目配置
 ├── config.example.toml   # 配置文件示例
