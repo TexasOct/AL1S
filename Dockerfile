@@ -8,6 +8,7 @@ ENV PATH="/app/venv/bin:$PATH"
 
 # 复制项目文件
 COPY pyproject.toml ./
+COPY README.md ./
 COPY main.py ./
 COPY src/ ./src/
 
