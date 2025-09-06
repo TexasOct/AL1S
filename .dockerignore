@@ -40,8 +40,6 @@ config/.env
 src/config/roles.yaml
 
 # 文档
-README.md
-*.md
 docs/
 
 # 测试文件
