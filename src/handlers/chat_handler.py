@@ -2,6 +2,7 @@
 聊天处理器模块
 """
 from typing import Optional
+import asyncio
 from telegram import Update
 from telegram.ext import ContextTypes
 from loguru import logger
@@ -287,187 +288,92 @@ class ChatHandler(BaseHandler):
                 await update.message.reply_text("抱歉，消息发送失败，请稍后再试。")
     
     async def handle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """处理文本消息"""
+        """处理文本消息（非阻塞：LLM处理后台进行）"""
         try:
             # 提取消息信息
             message_info = self.extract_message_info(update)
             if not message_info:
                 logger.warning("无法提取消息信息或消息为空，跳过处理")
-                return True  # 返回True，因为这不是错误，只是跳过空消息
-                
+                return True
+
             user_id = message_info["user_id"]
             chat_id = message_info["chat_id"]
             message = message_info["message"]
-            
-            # 记录用户到数据库
+
+            # 记录用户到数据库（确保对话可用）
             conversation_id = None
+            db_user_id = None
             if self.database_service:
                 try:
-                    # 确保用户存在
                     db_user_id = await self.database_service.ensure_user(
                         telegram_user_id=user_id,
                         username=update.effective_user.username,
                         first_name=update.effective_user.first_name,
                         last_name=update.effective_user.last_name
                     )
-                    
+
                     # 获取当前角色
                     current_role = self.conversation_service.get_role(user_id, chat_id)
                     role_name = current_role.name if current_role else "AI助手"
-                    
+
                     # 确保对话存在
                     conversation_id = await self.database_service.ensure_conversation(
                         user_id=db_user_id,
                         chat_id=chat_id,
                         role_name=role_name
                     )
-                    
+
                     # 保存用户消息
                     await self.database_service.save_message(conversation_id, message)
-                    
                 except Exception as e:
-                    logger.warning(f"数据库记录失败: {e}")  # 不影响主流程
-            
-            # 获取或创建对话
-            conversation = self.conversation_service.get_conversation(
-                user_id=user_id,
-                chat_id=chat_id
-            )
-            
-            # 获取当前角色
+                    logger.warning(f"数据库记录失败: {e}")
+
+            # 获取或创建对话与角色
+            conversation = self.conversation_service.get_conversation(user_id=user_id, chat_id=chat_id)
             role = conversation.role
             if not role:
-                # 如果没有设置角色，使用默认角色
                 role = self.conversation_service.get_role(user_id, chat_id)
                 if not role:
-                    # 如果还是没有角色，创建一个默认角色
                     default_role_name = "AI助手"
                     self.conversation_service.set_role(user_id, chat_id, default_role_name)
                     role = self.conversation_service.get_role(user_id, chat_id)
-            
-            # 添加用户消息到对话
-            self.conversation_service.add_message(
-                user_id=user_id,
-                chat_id=chat_id,
-                message=message
-            )
-            
-            # 先发送个性化占位信息
+
+            # 添加用户消息到对话（内存）
+            self.conversation_service.add_message(user_id=user_id, chat_id=chat_id, message=message)
+
+            # 发送个性化占位信息
             placeholder_text = self._get_placeholder_message(role)
             placeholder_message = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=placeholder_text,
                 reply_to_message_id=update.message.message_id
             )
-            
-            try:
-                # RAG检索相关知识
-                retrieved_knowledge = []
-                if self.rag_service and message.content:
-                    try:
-                        knowledge_results = await self.rag_service.retrieve_knowledge(
-                            user_id=user_id,
-                            query=message.content,
-                            conversation_id=conversation_id
-                        )
-                        retrieved_knowledge = knowledge_results
-                        if retrieved_knowledge:
-                            logger.info(f"RAG检索到 {len(retrieved_knowledge)} 个相关知识")
-                    except Exception as e:
-                        logger.warning(f"RAG检索失败: {e}")
-                
-                # 构建系统提示词（包含RAG知识）
-                system_prompt = self._build_system_prompt_with_rag(role, retrieved_knowledge)
-                
-                # 构建完整消息列表
-                messages = [{"role": "system", "content": system_prompt}]
-                
-                # 添加对话历史（限制长度）
-                for msg in conversation.messages[-10:]:  # 只保留最近10条消息
-                    # 确保消息内容不为空
-                    if msg.content and msg.content.strip():
-                        messages.append({"role": msg.role, "content": msg.content.strip()})
-                    else:
-                        logger.warning(f"跳过空消息: role={msg.role}, content='{msg.content}'")
-                
-                # 获取可用的MCP工具
-                tools = None
-                if self.mcp_service:
-                    tools = self.mcp_service.get_tools_for_llm()
-                    if tools:
-                        logger.info(f"可用的MCP工具数量: {len(tools)}")
-                
-                # 设置对话ID用于工具调用记录
-                if conversation_id:
-                    self.openai_service.set_conversation_id(conversation_id)
-                
-                # 调用OpenAI API（支持工具调用）
-                response_text = await self.openai_service.chat_completion(messages, tools)
-                
-                # 验证响应
-                if not response_text or not isinstance(response_text, str):
-                    response_text = "抱歉，我无法生成有效的响应，请稍后重试。"
-                
-                # 格式化响应
-                formatted_response = self._format_response(response_text)
-                
-                # 编辑占位信息，替换为实际响应
-                try:
-                    await context.bot.edit_message_text(
-                        chat_id=update.effective_chat.id,
-                        message_id=placeholder_message.message_id,
-                        text=formatted_response,
-                        parse_mode='HTML'
-                    )
-                except Exception as html_error:
-                    # 如果HTML解析失败，尝试发送纯文本
-                    logger.warning(f"HTML解析失败，回退到纯文本: {html_error}")
-                    await context.bot.edit_message_text(
-                        chat_id=update.effective_chat.id,
-                        message_id=placeholder_message.message_id,
-                        text=response_text  # 使用原始文本，不进行HTML格式化
-                    )
-                
-                # 添加机器人响应到对话
-                bot_message = Message(
-                    role="assistant",
-                    content=response_text,
-                    timestamp=time.time()
-                )
-                self.conversation_service.add_message(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    message=bot_message
-                )
-                
-                # 保存AI响应到数据库
-                if self.database_service and conversation_id:
-                    try:
-                        await self.database_service.save_message(conversation_id, bot_message)
-                    except Exception as e:
-                        logger.warning(f"保存AI响应失败: {e}")
-                
-                # RAG知识学习
-                if self.rag_service and self.knowledge_extractor and conversation_id:
-                    await self._learn_from_conversation(user_id, conversation_id, conversation.messages)
-                
-                logger.info(f"成功处理用户 {user_id} 的消息")
-                return True
-                
-            except Exception as e:
-                # 如果LLM处理失败，编辑占位信息为错误消息
-                error_message = f"❌ 处理消息时出现错误：{str(e)}"
-                await context.bot.edit_message_text(
+
+            # 后台处理LLM与RAG，不阻塞当前更新
+            async def _task():
+                await self._process_and_respond(
+                    context=context,
                     chat_id=update.effective_chat.id,
-                    message_id=placeholder_message.message_id,
-                    text=error_message
+                    placeholder_message_id=placeholder_message.message_id,
+                    user_id=user_id,
+                    conv_chat_id=chat_id,
+                    conversation_id=conversation_id,
+                    role=role,
+                    user_message=message,
                 )
-                logger.error(f"LLM处理失败: {e}")
-                return False
-                
+
+            try:
+                if hasattr(context, "application") and context.application:
+                    context.application.create_task(_task())
+                else:
+                    asyncio.create_task(_task())
+            except Exception as e:
+                logger.error(f"创建后台任务失败: {e}")
+
+            return True
+
         except Exception as e:
             logger.error(f"处理文本消息失败: {e}")
-            # 尝试发送错误消息
             try:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
@@ -477,3 +383,102 @@ class ChatHandler(BaseHandler):
             except Exception as send_error:
                 logger.error(f"发送错误消息失败: {send_error}")
             return False
+
+    async def _process_and_respond(
+        self,
+        context: ContextTypes.DEFAULT_TYPE,
+        chat_id: int,
+        placeholder_message_id: int,
+        user_id: int,
+        conv_chat_id: int,
+        conversation_id: Optional[int],
+        role,
+        user_message: Message,
+    ) -> None:
+        """后台执行：RAG检索、LLM生成与消息编辑。"""
+        try:
+            # RAG检索相关知识
+            retrieved_knowledge = []
+            if self.rag_service and user_message.content:
+                try:
+                    knowledge_results = await self.rag_service.retrieve_knowledge(
+                        user_id=user_id,
+                        query=user_message.content,
+                        conversation_id=conversation_id,
+                    )
+                    retrieved_knowledge = knowledge_results
+                    if retrieved_knowledge:
+                        logger.info(f"RAG检索到 {len(retrieved_knowledge)} 个相关知识")
+                except Exception as e:
+                    logger.warning(f"RAG检索失败: {e}")
+
+            # 构建系统提示词（包含RAG知识）
+            system_prompt = self._build_system_prompt_with_rag(role, retrieved_knowledge)
+
+            # 构建完整消息列表
+            conversation = self.conversation_service.get_conversation(user_id=user_id, chat_id=conv_chat_id)
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in conversation.messages[-10:]:
+                if msg.content and msg.content.strip():
+                    messages.append({"role": msg.role, "content": msg.content.strip()})
+
+            # 获取可用的MCP工具
+            tools = None
+            if self.mcp_service:
+                tools = self.mcp_service.get_tools_for_llm()
+
+            # 设置对话ID用于工具调用记录
+            if conversation_id:
+                self.openai_service.set_conversation_id(conversation_id)
+
+            # 调用OpenAI API（支持工具调用）
+            response_text = await self.openai_service.chat_completion(messages, tools)
+            if not response_text or not isinstance(response_text, str):
+                response_text = "抱歉，我无法生成有效的响应，请稍后重试。"
+
+            # 格式化响应
+            formatted_response = self._format_response(response_text)
+
+            # 编辑占位信息，替换为实际响应
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=placeholder_message_id,
+                    text=formatted_response,
+                    parse_mode='HTML',
+                )
+            except Exception as html_error:
+                logger.warning(f"HTML解析失败，回退到纯文本: {html_error}")
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=placeholder_message_id,
+                    text=response_text,
+                )
+
+            # 添加机器人响应到对话与数据库
+            bot_message = Message(role="assistant", content=response_text, timestamp=time.time())
+            self.conversation_service.add_message(user_id=user_id, chat_id=conv_chat_id, message=bot_message)
+
+            if self.database_service and conversation_id:
+                try:
+                    await self.database_service.save_message(conversation_id, bot_message)
+                except Exception as e:
+                    logger.warning(f"保存AI响应失败: {e}")
+
+            # RAG自动学习
+            if self.rag_service and self.knowledge_extractor and conversation_id:
+                await self._learn_from_conversation(user_id, conversation_id, conversation.messages)
+
+            logger.info(f"成功处理用户 {user_id} 的消息（后台任务）")
+
+        except Exception as e:
+            error_message = f"❌ 处理消息时出现错误：{str(e)}"
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=placeholder_message_id,
+                    text=error_message,
+                )
+            except Exception as edit_error:
+                logger.error(f"编辑错误消息失败: {edit_error}")
+            logger.error(f"后台任务失败: {e}")

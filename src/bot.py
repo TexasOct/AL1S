@@ -128,7 +128,13 @@ class AL1SBot:
         """启动机器人（支持优雅关闭的同步方法）"""
         try:
             # 创建应用
-            self.application = Application.builder().token(self.config.telegram.bot_token).build()
+            self.application = (
+                Application
+                    .builder()
+                    .token(self.config.telegram.bot_token)
+                    .concurrent_updates(True)
+                    .build()
+            )
             
             # 设置处理器
             self._setup_handlers()

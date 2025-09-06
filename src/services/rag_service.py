@@ -239,11 +239,11 @@ class RAGService:
             # 提取文本内容
             texts = [entry.content for entry in knowledge_entries]
             
-            # 训练嵌入模型
-            self.embedding_model.fit(texts)
+            # 训练嵌入模型（线程池避免阻塞事件循环）
+            await asyncio.to_thread(self.embedding_model.fit, texts)
             
-            # 生成向量
-            vectors = self.embedding_model.encode(texts)
+            # 生成向量（线程池避免阻塞事件循环）
+            vectors = await asyncio.to_thread(self.embedding_model.encode, texts)
             
             # 初始化FAISS索引
             if faiss is not None and len(vectors) > 0:
@@ -474,8 +474,8 @@ class RAGService:
     async def _generate_embedding(self, entry: KnowledgeEntry) -> bool:
         """为知识条目生成向量嵌入"""
         try:
-            # 生成向量
-            vector = self.embedding_model.encode_single(entry.content)
+            # 生成向量（线程池避免阻塞事件循环）
+            vector = await asyncio.to_thread(self.embedding_model.encode_single, entry.content)
             
             # 保存向量到数据库
             vector_data = pickle.dumps(vector)
@@ -514,8 +514,8 @@ class RAGService:
                                conversation_id: int = None) -> List[Tuple[KnowledgeEntry, float]]:
         """检索相关知识"""
         try:
-            # 生成查询向量
-            query_vector = self.embedding_model.encode_single(query)
+            # 生成查询向量（线程池避免阻塞事件循环）
+            query_vector = await asyncio.to_thread(self.embedding_model.encode_single, query)
             
             if self.index is not None and faiss is not None:
                 # 使用FAISS进行快速检索

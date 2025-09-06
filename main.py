@@ -2,6 +2,8 @@
 """
 AL1S-Bot 主程序入口
 """
+import os
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 import signal
 import sys
 from pathlib import Path
