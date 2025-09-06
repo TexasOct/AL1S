@@ -1,6 +1,6 @@
 [project]
 name = "al1s-bot"
-version = "1.0.0"
+version = "1.1.0"
 description = "一个功能完整的Telegram聊天机器人，支持OpenAI聊天、RAG知识增强、角色定制和图片搜索"
 readme = "README.md"
 license = "MIT"
@@ -35,6 +35,13 @@ dependencies = [
   "faiss-cpu>=1.7.4",
   "numpy>=2.0.0",
   "sentence-transformers>=5.1.0",
+  "langchain>=0.3.0",
+  "langchain-community>=0.3.0",
+  "langchain-openai>=0.2.0",
+  "langgraph>=0.2.0",
+  "langchain-text-splitters>=0.3.0",
+  "tiktoken>=0.7.0",
+  "langchain-huggingface>=0.1.0",
 ]
 
 [project.urls]
