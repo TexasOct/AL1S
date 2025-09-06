@@ -18,7 +18,7 @@ classifiers = [
     "Topic :: Communications :: Chat",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
   "python-telegram-bot>=22.3",
   "aiohttp>=3.8.0",

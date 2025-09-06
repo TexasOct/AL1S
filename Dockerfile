@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # 设置工作目录
 WORKDIR /app
@@ -22,8 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && node --version && npm --version \
     && groupadd -r botuser && useradd -r -g botuser -d /app -s /bin/bash botuser \
     && rm -rf /var/lib/apt/lists/* \
-    && uv venv ./venv \
-    && uv pip install --no-cache . \
     && mkdir -p /app/.npm /app/.npm-global /app/.cache \
     && chown -R botuser:botuser /app
 
@@ -32,10 +30,14 @@ ENV HOME=/app
 ENV NPM_CONFIG_CACHE=/app/.npm
 ENV NPM_CONFIG_PREFIX=/app/.npm-global
 ENV NPM_CONFIG_USERCONFIG=/app/.npmrc
-ENV PATH="/app/.npm-global/bin:$PATH"
+ENV PATH="/app/.venv/bin:/app/.npm-global/bin:$PATH"
 
 # 切换到非root用户
 USER botuser
+
+# 创建虚拟环境并安装依赖（以botuser身份）
+RUN uv venv ./venv \
+    && uv pip install --no-cache .
 
 # 健康检查 - 验证Python和Node.js环境
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
