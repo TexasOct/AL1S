@@ -1,8 +1,23 @@
 [project]
 name = "al1s-bot"
-version = "0.1.0"
-description = "一个功能完整的Telegram聊天机器人，支持OpenAI聊天、角色定制和图片搜索"
+version = "1.0.0"
+description = "一个功能完整的Telegram聊天机器人，支持OpenAI聊天、RAG知识增强、角色定制和图片搜索"
 readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "TexasOct", email = "aecom233@gmail.com"}
+]
+keywords = ["telegram", "bot", "ai", "rag", "chatbot", "openai"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Chat",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 requires-python = ">=3.11"
 dependencies = [
   "python-telegram-bot>=22.3",
@@ -24,6 +39,12 @@ dependencies = [
   "sentence-transformers>=5.1.0",
   "torch>=2.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/texasoct/al1s"
+Repository = "https://github.com/texasoct/al1s"
+Issues = "https://github.com/texasoct/al1s/issues"
+Documentation = "https://github.com/texasoct/al1s#README.md"
 
 [tool.uv]
 dev-dependencies = [
