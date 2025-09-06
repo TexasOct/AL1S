@@ -428,7 +428,6 @@ rm -rf data/vector_store/*
 - [FAISS](https://faiss.ai/) - 高效的向量相似性搜索
 - [python-telegram-bot](https://python-telegram-bot.org/) - Telegram Bot API的Python实现
 - [PicImageSearch](https://pic-image-search.kituin.fun/) - 提供强大的图片搜索功能
-- [scikit-learn](https://scikit-learn.org/) - 机器学习工具包
 - [SQLite](https://www.sqlite.org/) - 轻量级数据库引擎
 
 ## 📊 性能和资源使用
