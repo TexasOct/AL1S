@@ -80,13 +80,13 @@ class UnifiedAgentService:
             # 使用 agent 配置中的嵌入模型
             embedding_model = (
                 config.agent.embedding_model
-                if hasattr(config, "agent") and config.agent.embedding_model
-                else config.rag.embedding_model
+                if hasattr(config, "agent") and hasattr(config.agent, "embedding_model")
+                else "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )
             vector_store_backend = (
                 config.agent.vector_store_backend
-                if hasattr(config, "agent") and config.agent.vector_store_backend
-                else config.rag.vector_store_backend
+                if hasattr(config, "agent") and hasattr(config.agent, "vector_store_backend")
+                else "faiss"
             )
 
             # 初始化 vector service
@@ -140,7 +140,7 @@ class UnifiedAgentService:
                     user_query = msg["content"]
                     break
 
-            if user_query and self._rag_index is not None:
+            if user_query and self.vector_service:
                 rag_context = await self._retrieve_knowledge(user_query)
                 if rag_context:
                     # 增强最后一条用户消息
@@ -158,9 +158,41 @@ class UnifiedAgentService:
                 "temperature": config.openai.temperature,
             }
 
+            # 检查是否需要网页访问功能
+            web_keywords = ["网页", "网站", "http", "https", "搜索", "新闻", "最新", "实时"]
+            user_content = ""
+            for msg in full_messages:
+                if msg.get("role") == "user":
+                    user_content += msg.get("content", "")
+            
+            needs_web_access = any(keyword in user_content for keyword in web_keywords)
+            
+            # 构建工具列表
+            available_tools = tools or []
+            if needs_web_access and self.tool_handler:
+                # 添加网页抓取工具
+                web_scraper_tool = {
+                    "type": "function",
+                    "function": {
+                        "name": "web_scraper",
+                        "description": "抓取网页内容并提取文本信息。当用户询问需要实时信息、新闻、网页内容或需要查看特定网站时使用。",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "url": {
+                                    "type": "string",
+                                    "description": "要抓取的网页URL"
+                                }
+                            },
+                            "required": ["url"]
+                        }
+                    }
+                }
+                available_tools.append(web_scraper_tool)
+
             # 如果有工具，添加工具参数
-            if tools and self.tool_handler:
-                api_params["tools"] = tools
+            if available_tools and self.tool_handler:
+                api_params["tools"] = available_tools
                 api_params["tool_choice"] = "auto"
 
             # 调用OpenAI API
@@ -225,7 +257,7 @@ class UnifiedAgentService:
 
                 tool_results.append(
                     {
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call.id if hasattr(tool_call, 'id') else f"call_{tool_name}",
                         "role": "tool",
                         "name": tool_name,
                         "content": result or "工具执行完成",
@@ -256,11 +288,20 @@ class UnifiedAgentService:
         self, tool_name: str, arguments: Dict[str, Any]
     ) -> Optional[str]:
         """MCP工具处理器"""
-        if not self.mcp_service:
-            return None
-
         try:
-            result = await self.mcp_service.call_tool(tool_name, arguments)
+            # 处理自定义网页抓取工具
+            if tool_name == "web_scraper":
+                url = arguments.get("url") or arguments.get("query", "")
+                if url:
+                    result = await self._scrape_webpage(url)
+                else:
+                    result = "网页抓取失败: 未提供URL"
+            else:
+                # 处理其他MCP工具
+                if not self.mcp_service:
+                    return None
+                
+                result = await self.mcp_service.call_tool(tool_name, arguments)
 
             # 记录工具调用到数据库
             if self.database_service and self._current_conversation_id:
@@ -275,8 +316,53 @@ class UnifiedAgentService:
             return result
 
         except Exception as e:
-            logger.error(f"MCP工具调用失败: {e}")
+            logger.error(f"工具调用失败: {e}")
             return f"工具调用失败: {str(e)}"
+
+    async def _scrape_webpage(self, url: str) -> str:
+        """网页抓取功能"""
+        try:
+            import aiohttp
+            from bs4 import BeautifulSoup
+            
+            # 验证URL格式
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30),
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+            ) as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        
+                        # 移除脚本和样式标签
+                        for script in soup(["script", "style", "nav", "footer", "header"]):
+                            script.decompose()
+                        
+                        # 提取文本内容
+                        text = soup.get_text()
+                        
+                        # 清理文本
+                        lines = (line.strip() for line in text.splitlines())
+                        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                        text = ' '.join(chunk for chunk in chunks if chunk)
+                        
+                        # 限制长度，避免返回过长的内容
+                        if len(text) > 3000:
+                            text = text[:3000] + "..."
+                        
+                        return f"网页内容 ({url}):\n{text}"
+                    else:
+                        return f"无法访问网页 {url}，状态码: {response.status}"
+                        
+        except Exception as e:
+            logger.error(f"网页抓取失败: {e}")
+            return f"网页抓取失败: {str(e)}"
 
     async def analyze_image(
         self, image_data: bytes, prompt: str = "请描述这张图片"

@@ -93,17 +93,17 @@ enabled = true
 
 # 网络搜索工具（需要API密钥）
 [[mcp.servers]]
-name = "brave-search"
+name = "web-search"
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-brave-search"]
-enabled = false
-env = { BRAVE_API_KEY = "your-brave-api-key" }
+args = ["-y", "tavily-search"]
+enabled = true
+env = { TAVILY_API_KEY = "your-tavily-api-key" }
 
 # GitHub 工具（需要访问令牌）
 [[mcp.servers]]
 name = "github"
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-github"]
+args = ["-y", "mcp-remote https://mcp.tavily.com/mcp/?tavilyApiKey=<your-api-key>"]
 enabled = false
 env = { GITHUB_PERSONAL_ACCESS_TOKEN = "your-github-token" }
 

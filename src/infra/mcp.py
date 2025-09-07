@@ -63,7 +63,7 @@ class MCPService:
             # 使用超时和更简单的连接方式
             try:
                 # 临时连接以获取工具信息
-                async with asyncio.timeout(10):  # 10秒超时
+                async with asyncio.timeout(30):  # 30秒超时
                     async with stdio_client(server_params) as (read, write):
                         async with ClientSession(read, write) as session:
                             # 初始化会话
@@ -251,16 +251,32 @@ class MCPService:
             }
         return status
 
-    async def initialize_default_servers(self, mcp_configs: List[Dict[str, Any]]):
+    async def initialize_default_servers(self, mcp_configs: List[Any]):
         """初始化默认MCP服务器"""
         for config in mcp_configs:
             try:
-                server_config = MCPServerConfig(
-                    name=config.get("name", "unknown"),
-                    command=config.get("command", ""),
-                    args=config.get("args", []),
-                    env=config.get("env", {}),
-                )
+                # 处理不同类型的配置对象
+                if hasattr(config, 'name'):
+                    # 已经是 MCPServerConfig 对象
+                    server_config = MCPServerConfig(
+                        name=config.name,
+                        command=config.command,
+                        args=getattr(config, 'args', []),
+                        env=getattr(config, 'env', {}),
+                    )
+                else:
+                    # 字典类型的配置
+                    server_config = MCPServerConfig(
+                        name=config.get("name", "unknown"),
+                        command=config.get("command", ""),
+                        args=config.get("args", []),
+                        env=config.get("env", {}),
+                    )
+
+                # 只初始化启用的服务器
+                if hasattr(config, 'enabled') and not config.enabled:
+                    logger.info(f"跳过禁用的MCP服务器: {server_config.name}")
+                    continue
 
                 success = await self.add_server(server_config)
                 if success:

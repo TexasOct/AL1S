@@ -156,7 +156,14 @@ class LangChainAgentService:
                 func=self._search_knowledge_sync,
             )
 
-            self._tools = [self._retriever_tool]
+            # 创建网页抓取工具
+            web_scraper_tool = Tool(
+                name="web_scraper",
+                description="抓取网页内容并提取文本信息。当用户询问需要实时信息、新闻、网页内容或需要查看特定网站时使用。输入应该是完整的URL。",
+                func=self._scrape_webpage_sync,
+            )
+
+            self._tools = [self._retriever_tool, web_scraper_tool]
 
             # 添加 MCP 工具（如果可用）
             if self.mcp_service:
@@ -277,18 +284,94 @@ class LangChainAgentService:
             logger.error(f"异步知识搜索失败: {e}")
             return f"知识搜索失败: {str(e)}"
 
+    def _scrape_webpage_sync(self, url: str) -> str:
+        """同步网页抓取功能"""
+        try:
+            import asyncio
+            import aiohttp
+            from bs4 import BeautifulSoup
+            
+            # 在同步上下文中运行异步网页抓取
+            try:
+                loop = asyncio.get_running_loop()
+                future = asyncio.run_coroutine_threadsafe(
+                    self._scrape_webpage_async(url), loop
+                )
+                result = future.result(timeout=30)
+            except RuntimeError:
+                result = asyncio.run(self._scrape_webpage_async(url))
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"网页抓取失败: {e}")
+            return f"网页抓取失败: {str(e)}"
+
+    async def _scrape_webpage_async(self, url: str) -> str:
+        """异步网页抓取功能"""
+        try:
+            import aiohttp
+            from bs4 import BeautifulSoup
+            
+            # 验证URL格式
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30),
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+            ) as session:
+                async with session.get(url) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        
+                        # 移除脚本和样式标签
+                        for script in soup(["script", "style", "nav", "footer", "header"]):
+                            script.decompose()
+                        
+                        # 提取文本内容
+                        text = soup.get_text()
+                        
+                        # 清理文本
+                        lines = (line.strip() for line in text.splitlines())
+                        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                        text = ' '.join(chunk for chunk in chunks if chunk)
+                        
+                        # 限制长度，避免返回过长的内容
+                        if len(text) > 3000:
+                            text = text[:3000] + "..."
+                        
+                        return f"网页内容 ({url}):\n{text}"
+                    else:
+                        return f"无法访问网页 {url}，状态码: {response.status}"
+                        
+        except Exception as e:
+            logger.error(f"网页抓取失败: {e}")
+            return f"网页抓取失败: {str(e)}"
+
     async def _build_agent(self):
         """构建 LangChain Agent"""
         try:
             from langchain.agents import AgentExecutor, create_openai_tools_agent
             from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+            from langchain.memory import ConversationBufferWindowMemory
 
-            # 创建 Agent 提示模板
+            # 创建对话记忆（保持最近的对话历史）
+            memory = ConversationBufferWindowMemory(
+                memory_key="chat_history",
+                return_messages=True,
+                k=10,  # 保留最近10轮对话
+            )
+
+            # 创建增强的 Agent 提示模板，包含对话记忆
             prompt = ChatPromptTemplate.from_messages(
                 [
                     (
                         "system",
-                        """你是天童爱丽丝，一个智能助手，具有搜索用户个人信息的能力。
+                        """你是天童爱丽丝，一个智能助手，具有搜索用户个人信息、记忆对话和访问网页的能力。
 
 🔍 CRITICAL: 工具使用规则
 1. 当用户询问关于自己的任何信息时，必须首先使用 knowledge_search 工具搜索
@@ -296,14 +379,25 @@ class LangChainAgentService:
 3. 搜索关键词：从用户问题中提取关键词，如"生日"、"喜好"、"信息"等
 4. 基于搜索结果回答，如果没找到则说明没有相关记录
 
+🌐 网页访问能力：
+1. 当用户询问实时信息、新闻、网页内容时，使用 web_scraper 工具
+2. 当用户提供URL并要求查看网页内容时，使用 web_scraper 工具
+3. 当需要搜索网络信息时，优先使用 MCP 的 brave_search 工具（如果可用）
+4. 网页抓取输入应该是完整的URL（如：https://example.com）
+
 ⚡ 触发搜索的问题类型：
 - "我的生日是什么时候？" → 搜索"生日"
 - "你知道我的信息吗？" → 搜索"用户信息"  
 - "我之前说过什么？" → 搜索"历史对话"
 - "我喜欢什么？" → 搜索"喜好"
+- "帮我看看这个网页" → 使用 web_scraper
+- "搜索最新的新闻" → 使用 brave_search
+
+💭 对话记忆：你可以参考之前的对话历史来更好地理解用户的问题和上下文。
 
 记住：你是天童爱丽丝，活泼可爱，用"邦邦卡邦"等口头禅。""",
                     ),
+                    MessagesPlaceholder(variable_name="chat_history"),
                     ("user", "{input}"),
                     MessagesPlaceholder(variable_name="agent_scratchpad"),
                 ]
@@ -312,17 +406,18 @@ class LangChainAgentService:
             # 创建 Agent
             agent = create_openai_tools_agent(self._llm, self._tools, prompt)
 
-            # 创建 Agent 执行器
+            # 创建 Agent 执行器，集成记忆功能
             self._agent = AgentExecutor(
                 agent=agent,
                 tools=self._tools,
+                memory=memory,
                 verbose=True,
                 max_iterations=5,
                 max_execution_time=60,
                 handle_parsing_errors=True,
             )
 
-            logger.info("LangChain Agent 构建完成")
+            logger.info("LangChain Agent 构建完成，已集成对话记忆功能")
 
         except Exception as e:
             logger.error(f"构建 Agent 失败: {e}")
@@ -342,37 +437,21 @@ class LangChainAgentService:
                 logger.warning("LangChain Agent 服务未初始化")
                 return None
 
-            # 提取系统消息（包含角色信息）和用户消息
-            system_message = ""
-            user_message = ""
-            conversation_history = []
-
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_message = msg["content"]
-                elif msg["role"] == "user":
-                    user_message = msg["content"]
-                elif msg["role"] == "assistant":
-                    # 保存对话历史用于上下文
-                    conversation_history.append(msg)
-
-            if not user_message:
+            # 解析消息结构，构建完整上下文
+            context_info = self._parse_message_context(messages)
+            
+            if not context_info["current_user_message"]:
                 return "抱歉，无法从消息中提取用户问题。"
 
             # 如果有 Agent，使用 Agent 处理
             if self._agent:
                 try:
-                    # 构建包含角色信息的输入
-                    agent_input = {"input": user_message}
-
-                    # 如果有系统消息（角色信息），添加到聊天历史中
-                    if system_message:
-                        # 将角色信息作为额外上下文传递给 Agent
-                        enhanced_input = (
-                            f"角色设定: {system_message}\n\n用户问题: {user_message}"
-                        )
-                        agent_input = {"input": enhanced_input}
-
+                    # 构建增强的输入，包含完整对话上下文
+                    agent_input = self._build_agent_input_with_context(context_info)
+                    
+                    # LangChain Agent 的记忆功能会自动处理对话历史
+                    # 我们不需要手动更新记忆，Agent 会在执行过程中自动维护
+                    
                     response = await self._agent.ainvoke(agent_input)
                     return response.get("output", "抱歉，Agent 未能生成有效回答。")
                 except Exception as e:
@@ -380,12 +459,114 @@ class LangChainAgentService:
 
             # 简化模式：直接使用 LLM + 知识检索
             return await self._simple_rag_response(
-                user_message, messages, system_message
+                context_info["current_user_message"], messages, context_info["system_message"]
             )
 
         except Exception as e:
             logger.error(f"LangChain Agent 聊天完成失败: {e}")
             return None
+
+    def _parse_message_context(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """解析消息上下文，提取关键信息"""
+        context = {
+            "system_message": "",
+            "current_user_message": "",
+            "conversation_history": [],
+            "user_messages": [],
+            "assistant_messages": [],
+        }
+        
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            
+            if role == "system":
+                context["system_message"] = content
+            elif role == "user":
+                context["user_messages"].append({"index": i, "content": content})
+                # 最后一条用户消息是当前问题
+                if i == len(messages) - 1 or (i + 1 < len(messages) and messages[i + 1]["role"] != "user"):
+                    context["current_user_message"] = content
+            elif role == "assistant":
+                context["assistant_messages"].append({"index": i, "content": content})
+            
+            # 保存完整对话历史（除了系统消息和当前用户消息）
+            if role != "system" and not (role == "user" and content == context["current_user_message"]):
+                context["conversation_history"].append(msg)
+        
+        return context
+
+    def _build_agent_input_with_context(self, context_info: Dict[str, Any]) -> Dict[str, str]:
+        """构建包含完整上下文的 Agent 输入"""
+        # 如果 Agent 有内置记忆功能，让它自己处理对话历史
+        if hasattr(self._agent, 'memory') and self._agent.memory:
+            # 只传递当前用户消息，让 Agent 的记忆系统处理历史
+            enhanced_input = context_info["current_user_message"]
+            
+            # 如果有角色设定，将其融入当前问题的上下文中
+            if context_info["system_message"]:
+                enhanced_input = f"{context_info['current_user_message']}"
+                # 角色信息通过系统提示传递，不需要重复
+            
+        else:
+            # 如果没有内置记忆，手动构建上下文
+            context_parts = []
+            
+            # 添加角色设定
+            if context_info["system_message"]:
+                context_parts.append(f"角色设定: {context_info['system_message']}")
+            
+            # 添加对话历史摘要
+            if context_info["conversation_history"]:
+                context_parts.append("对话历史:")
+                # 只保留最近的几轮对话，避免上下文过长
+                recent_history = context_info["conversation_history"][-6:]  # 最近3轮对话
+                for msg in recent_history:
+                    role_name = "用户" if msg["role"] == "user" else "助手"
+                    content = msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"]
+                    context_parts.append(f"{role_name}: {content}")
+            
+            # 添加当前用户问题
+            context_parts.append(f"当前问题: {context_info['current_user_message']}")
+            
+            # 构建最终输入
+            enhanced_input = "\n\n".join(context_parts)
+        
+        return {"input": enhanced_input}
+
+    def _update_agent_memory(self, context_info: Dict[str, Any]) -> None:
+        """更新 Agent 记忆（如果支持）"""
+        try:
+            if not hasattr(self._agent, 'memory') or not self._agent.memory:
+                return
+            
+            # 将对话历史成对添加到记忆中（用户-助手对）
+            user_messages = context_info["user_messages"]
+            assistant_messages = context_info["assistant_messages"]
+            
+            # 找到用户-助手消息对
+            conversation_pairs = []
+            for user_msg in user_messages:
+                user_content = user_msg["content"]
+                # 查找对应的助手回复（在用户消息之后的第一个助手消息）
+                for assistant_msg in assistant_messages:
+                    if assistant_msg["index"] > user_msg["index"]:
+                        conversation_pairs.append({
+                            "input": user_content,
+                            "output": assistant_msg["content"]
+                        })
+                        break
+            
+            # 将完整的对话对添加到记忆中
+            for pair in conversation_pairs:
+                if pair["input"] and pair["output"]:  # 确保都不为空
+                    self._agent.memory.save_context(
+                        {"input": pair["input"]}, 
+                        {"output": pair["output"]}
+                    )
+                    
+        except Exception as e:
+            logger.warning(f"更新 Agent 记忆失败: {e}")
 
     async def _simple_rag_response(
         self,
@@ -418,7 +599,7 @@ class LangChainAgentService:
 
             # 添加对话历史（除了最后一条用户消息）
             for msg in messages[:-1]:
-                if msg["role"] != "system":  # 避免重复添加系统消息
+                if msg["role"] != "system" and msg.get("content", "").strip():  # 避免重复添加系统消息和空消息
                     enhanced_messages.append(msg)
 
             # 增强最后一条用户消息
@@ -433,12 +614,16 @@ class LangChainAgentService:
 
             langchain_messages = []
             for msg in enhanced_messages:
+                content = msg.get("content", "").strip()
+                if not content:  # 跳过空内容的消息
+                    continue
+                    
                 if msg["role"] == "system":
-                    langchain_messages.append(SystemMessage(content=msg["content"]))
+                    langchain_messages.append(SystemMessage(content=content))
                 elif msg["role"] == "user":
-                    langchain_messages.append(HumanMessage(content=msg["content"]))
+                    langchain_messages.append(HumanMessage(content=content))
                 elif msg["role"] == "assistant":
-                    langchain_messages.append(AIMessage(content=msg["content"]))
+                    langchain_messages.append(AIMessage(content=content))
 
             response = await self._llm.ainvoke(langchain_messages)
             return response.content
