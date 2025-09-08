@@ -17,9 +17,9 @@ from loguru import logger
 # OpenAI imports
 from openai import AsyncOpenAI
 
-from ..config import config
-from ..infra.vector import VectorService
-from ..services.learning_service import LearningService
+from ...config import config
+from ...infra.vector import VectorService
+from ...services.learning_service import LearningService
 
 
 class UnifiedAgentService:

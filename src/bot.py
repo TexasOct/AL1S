@@ -24,7 +24,7 @@ from .infra.mcp import MCPService
 from .services.ascii2d_service import Ascii2DService
 from .services.conversation_service import ConversationService
 from .agents.langchain_agent_service import LangChainAgentService
-from .agents.unified_agent_service import UnifiedAgentService
+from .agents.unified_agent import UnifiedAgentService
 from .utils.database_logger import init_database_logger
 
 
@@ -540,35 +540,69 @@ class AL1SBot:
             else:
                 stats = {"message": "当前Agent服务不支持统计信息"}
 
-            message = "📊 <b>RAG知识库统计</b>\n\n"
+            message = "📊 <b>RAG/学习统计</b>\n\n"
 
-            for table_name, info in stats.items():
-                if table_name == "vector_index":
-                    message += f"🔍 <b>向量索引</b>\n"
-                    message += f"• 向量数量: {info['total_vectors']}\n"
-                    message += f"• 向量维度: {info['dimension']}\n"
-                    message += f"• 索引类型: {info['index_type']}\n\n"
+            # 兼容两种返回结构：
+            # 1) 新版 LearningService 返回的平铺统计，如 total_learned、total_knowledge_in_db 等
+            # 2) 旧版按表名分组的字典结构（包含 vector_index / knowledge_entries 等）
+            if isinstance(stats, dict):
+                has_dict_values = any(isinstance(v, dict) for v in stats.values())
+
+                if ("total_learned" in stats) or ("total_knowledge_in_db" in stats) or not has_dict_values:
+                    # 新版/平铺结构
+                    total_learned = int(stats.get("total_learned", 0) or 0)
+                    failed = int(stats.get("failed_extractions", 0) or 0)
+                    deduped = int(stats.get("duplicate_filtered", 0) or 0)
+                    sessions = int(stats.get("learning_sessions", 0) or 0)
+                    total_in_db = int(stats.get("total_knowledge_in_db", 0) or 0)
+                    last_time = stats.get("last_learning_time")
+
+                    message += "🧠 <b>学习概览</b>\n"
+                    message += f"• 学到知识: {total_learned}\n"
+                    message += f"• 失败抽取: {failed}\n"
+                    message += f"• 去重过滤: {deduped}\n"
+                    message += f"• 学习会话: {sessions}\n"
+                    message += f"• 知识库存量: {total_in_db}\n"
+                    if last_time:
+                        message += f"• 最近学习: {last_time}\n"
                 else:
-                    display_name = {
-                        "knowledge_entries": "知识条目",
-                        "embeddings": "向量嵌入",
-                        "knowledge_retrievals": "检索记录",
-                    }.get(table_name, table_name)
+                    # 旧版/分表结构
+                    for table_name, info in stats.items():
+                        if not isinstance(info, dict):
+                            message += f"• {table_name}: {info}\n"
+                            continue
 
-                    message += f"📚 <b>{display_name}</b>\n"
-                    message += f"• 总数量: {info['total_count']}\n"
-                    message += f"• 用户数: {info.get('unique_users', 0)}\n"
+                        if table_name == "vector_index":
+                            message += f"🔍 <b>向量索引</b>\n"
+                            message += f"• 向量数量: {info.get('total_vectors', 0)}\n"
+                            message += f"• 向量维度: {info.get('dimension', '-')}\n"
+                            message += f"• 索引类型: {info.get('index_type', '-')}\n\n"
+                        else:
+                            display_name = {
+                                "knowledge_entries": "知识条目",
+                                "embeddings": "向量嵌入",
+                                "knowledge_retrievals": "检索记录",
+                            }.get(table_name, table_name)
 
-                    metric_name = (
-                        "平均重要性"
-                        if table_name == "knowledge_entries"
-                        else "平均维度" if table_name == "embeddings" else "使用率"
-                    )
-                    message += f"• {metric_name}: {info['additional_metric']:.2f}\n"
+                            message += f"📚 <b>{display_name}</b>\n"
+                            message += f"• 总数量: {info.get('total_count', 0)}\n"
+                            message += f"• 用户数: {info.get('unique_users', 0)}\n"
 
-                    if info["last_created"]:
-                        message += f"• 最后更新: {info['last_created']}\n"
-                    message += "\n"
+                            metric_name = (
+                                "平均重要性"
+                                if table_name == "knowledge_entries"
+                                else "平均维度" if table_name == "embeddings" else "使用率"
+                            )
+                            add_metric = info.get("additional_metric")
+                            if isinstance(add_metric, (int, float)):
+                                message += f"• {metric_name}: {add_metric:.2f}\n"
+                            elif add_metric is not None:
+                                message += f"• {metric_name}: {add_metric}\n"
+
+                            last_created = info.get("last_created")
+                            if last_created:
+                                message += f"• 最后更新: {last_created}\n"
+                            message += "\n"
 
             await update.message.reply_text(message, parse_mode="HTML")
 

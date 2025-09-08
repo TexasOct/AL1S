@@ -357,14 +357,25 @@ class LangChainAgentService:
         try:
             from langchain.agents import AgentExecutor, create_openai_tools_agent
             from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-            from langchain.memory import ConversationBufferWindowMemory
-
-            # 创建对话记忆（保持最近的对话历史）
-            memory = ConversationBufferWindowMemory(
-                memory_key="chat_history",
-                return_messages=True,
-                k=10,  # 保留最近10轮对话
-            )
+            # 使用新的内存管理方式，避免弃用警告
+            try:
+                from langchain_community.memory import ConversationBufferWindowMemory
+                memory = ConversationBufferWindowMemory(
+                    memory_key="chat_history",
+                    return_messages=True,
+                    k=10,  # 保留最近10轮对话
+                )
+            except ImportError:
+                # 如果新版本不可用，使用旧版本但抑制警告
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=DeprecationWarning)
+                    from langchain.memory import ConversationBufferWindowMemory
+                    memory = ConversationBufferWindowMemory(
+                        memory_key="chat_history",
+                        return_messages=True,
+                        k=10,  # 保留最近10轮对话
+                    )
 
             # 创建增强的 Agent 提示模板，包含对话记忆
             prompt = ChatPromptTemplate.from_messages(
@@ -412,8 +423,8 @@ class LangChainAgentService:
                 tools=self._tools,
                 memory=memory,
                 verbose=True,
-                max_iterations=5,
-                max_execution_time=60,
+                max_iterations=15,  # 增加最大迭代次数，支持复杂任务
+                max_execution_time=120,  # 增加执行时间限制
                 handle_parsing_errors=True,
             )
 
@@ -453,18 +464,205 @@ class LangChainAgentService:
                     # 我们不需要手动更新记忆，Agent 会在执行过程中自动维护
                     
                     response = await self._agent.ainvoke(agent_input)
-                    return response.get("output", "抱歉，Agent 未能生成有效回答。")
+                    output_text = response.get("output", "抱歉，Agent 未能生成有效回答。")
+
+                    # 如果Agent返回了迭代上限提示，进行应急总结
+                    if isinstance(output_text, str) and any(
+                        kw in output_text.lower() for kw in [
+                            "agent stopped", "stopped due to max", "max iterations"
+                        ]
+                    ):
+                        fallback = await self._analyze_with_collected_info(
+                            context_info["current_user_message"],
+                            messages,
+                            context_info["system_message"],
+                            output_text,
+                        )
+                        return self._format_for_telegram(fallback)
+
+                    return self._format_for_telegram(output_text)
                 except Exception as e:
-                    logger.warning(f"Agent 处理失败，使用简化模式: {e}")
+                    error_msg = str(e)
+                    logger.warning(f"Agent 处理失败: {e}")
+                    
+                    # 检查是否是迭代限制问题
+                    if any(keyword in error_msg.lower() for keyword in [
+                        "max iterations", "max_iterations", "agent stopped", "stopped due to max"
+                    ]):
+                        logger.info("检测到迭代限制，尝试基于已收集信息进行分析...")
+                        return await self._analyze_with_collected_info(
+                            context_info["current_user_message"], 
+                            messages, 
+                            context_info["system_message"],
+                            error_msg
+                        )
+                    else:
+                        # 其他错误，使用简化模式
+                        return await self._simple_rag_response(
+                            context_info["current_user_message"], messages, context_info["system_message"]
+                        )
 
             # 简化模式：直接使用 LLM + 知识检索
-            return await self._simple_rag_response(
+            simple = await self._simple_rag_response(
                 context_info["current_user_message"], messages, context_info["system_message"]
             )
+            return self._format_for_telegram(simple)
 
         except Exception as e:
             logger.error(f"LangChain Agent 聊天完成失败: {e}")
             return None
+
+    # =====================
+    # Telegram HTML 格式化
+    # =====================
+    def _markdown_to_telegram_html(self, text: str) -> str:
+        """将常见 Markdown 转换为 Telegram 支持的 HTML。"""
+        if not text or not isinstance(text, str):
+            return text
+
+        import re
+        import html as _html
+
+        converted = text
+
+        # 代码块 ```lang\n...\n```
+        def _codeblock_repl(m):
+            code = m.group(2) or ""
+            return f"<pre>{_html.escape(code)}</pre>"
+
+        converted = re.sub(r"```([a-zA-Z0-9_+\-]*)\n([\s\S]*?)```", _codeblock_repl, converted)
+
+        # 行内代码 `code`
+        converted = re.sub(r"`([^`]+)`", lambda m: f"<code>{_html.escape(m.group(1))}</code>", converted)
+
+        # 粗体/斜体/删除线
+        converted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", converted, flags=re.DOTALL)
+        converted = re.sub(r"__(.+?)__", r"<b>\1</b>", converted, flags=re.DOTALL)
+        converted = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", converted, flags=re.DOTALL)
+        converted = re.sub(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", r"<i>\1</i>", converted, flags=re.DOTALL)
+        converted = re.sub(r"~~(.+?)~~", r"<s>\1</s>", converted, flags=re.DOTALL)
+
+        # 链接 [text](url)
+        def _link_repl(m):
+            label = m.group(1)
+            url = m.group(2)
+            if url.lower().startswith(("http://", "https://")):
+                return f"<a href=\"{_html.escape(url)}\">{_html.escape(label)}</a>"
+            return _html.escape(label)
+
+        converted = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _link_repl, converted)
+
+        # 标题行 -> 粗体
+        def _heading_repl(m):
+            return f"<b>{_html.escape(m.group(2).strip())}</b>\n"
+
+        converted = re.sub(r"^(#{1,6})\s+(.*)$", _heading_repl, converted, flags=re.MULTILINE)
+
+        # 列表项 -> 项符号
+        converted = re.sub(r"^\s*[-\*]\s+", "• ", converted, flags=re.MULTILINE)
+        converted = re.sub(r"^\s*\d+\.\s+", "• ", converted, flags=re.MULTILINE)
+
+        return converted
+
+    def _sanitize_telegram_html(self, text: str) -> str:
+        """只保留 Telegram 允许的 HTML 标签。"""
+        if not text:
+            return text
+
+        import re
+
+        unsupported_patterns = [
+            r"</?dyn[^>]*>",
+            r"</?span[^>]*>",
+            r"</?div[^>]*>",
+            r"</?p[^>]*>",
+            r"</?strong[^>]*>",
+            r"</?em[^>]*>",
+            r"</?h[1-6][^>]*>",
+            r"</?ul[^>]*>",
+            r"</?ol[^>]*>",
+            r"</?li[^>]*>",
+            r"</?br[^>]*>",
+            r"</?hr[^>]*>",
+        ]
+
+        # 保护允许的标签
+        allowed = ["b", "i", "u", "s", "code", "pre", "a"]
+        protected = {}
+        counter = 0
+        for tag in allowed:
+            pattern = f"<{tag}[^>]*>.*?</{tag}>"
+            for m in re.findall(pattern, text, flags=re.DOTALL | re.IGNORECASE):
+                key = f"__SAFE_{counter}__"
+                protected[key] = m
+                text = text.replace(m, key, 1)
+                counter += 1
+
+        for pat in unsupported_patterns:
+            text = re.sub(pat, "", text, flags=re.IGNORECASE)
+
+        for k, v in protected.items():
+            text = text.replace(k, v)
+
+        return text
+
+    def _format_for_telegram(self, text: str) -> str:
+        return self._sanitize_telegram_html(self._markdown_to_telegram_html(text))
+
+    async def _analyze_with_collected_info(
+        self, 
+        user_message: str, 
+        messages: List[Dict[str, str]], 
+        system_message: str,
+        error_msg: str
+    ) -> str:
+        """基于已收集的信息进行分析，当达到迭代限制时使用"""
+        try:
+            logger.info("开始基于已收集信息进行分析...")
+            
+            # 构建分析提示词
+            analysis_prompt = f"""你是天童爱丽丝，一个智能助手。虽然工具调用达到了迭代限制，但请基于以下信息为用户提供有用的分析：
+
+用户问题: {user_message}
+
+系统消息: {system_message}
+
+错误信息: {error_msg}
+
+请基于你的知识和理解，为用户提供一个有用的回答。如果问题涉及网页内容、GitHub仓库或其他需要实时信息的内容，请说明由于技术限制无法获取最新信息，但可以基于一般知识提供分析。
+
+记住：你是天童爱丽丝，活泼可爱，用"邦邦卡邦"等口头禅。"""
+
+            # 使用 LLM 直接生成回答
+            if self._llm:
+                try:
+                    response = await self._llm.ainvoke(analysis_prompt)
+                    if hasattr(response, 'content'):
+                        return response.content
+                    else:
+                        return str(response)
+                except Exception as e:
+                    logger.error(f"LLM 分析失败: {e}")
+            
+            # 如果 LLM 不可用，提供基础回答
+            return f"""邦邦卡邦！抱歉，在处理你的问题时遇到了一些技术限制，无法完成完整的分析。
+
+不过，关于你的问题"{user_message}"，我可以基于一般知识为你提供一些信息：
+
+如果你询问的是GitHub仓库分析，我可以告诉你一般Rust项目的结构通常包括：
+- src/ 目录存放源代码
+- Cargo.toml 配置文件
+- README.md 项目说明
+- tests/ 测试代码
+- benches/ 性能测试
+
+如果你询问的是网页内容或实时信息，建议你直接访问相关网站获取最新信息。
+
+邦邦卡邦！虽然这次没能完成完整的分析，但我会继续努力改进的！✨"""
+
+        except Exception as e:
+            logger.error(f"基于已收集信息分析失败: {e}")
+            return f"邦邦卡邦！抱歉，在处理你的问题时遇到了一些技术问题。请稍后再试，或者尝试用更简单的方式提问。✨"
 
     def _parse_message_context(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         """解析消息上下文，提取关键信息"""

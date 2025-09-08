@@ -2,9 +2,8 @@
 图片处理器模块
 """
 
-import io
 import time
-from typing import List, Optional
+from typing import List
 
 from loguru import logger
 from telegram import Update
@@ -13,7 +12,7 @@ from telegram.ext import ContextTypes
 from ..models import ImageSearchResult, Message
 from ..services.ascii2d_service import Ascii2DService
 from ..services.conversation_service import ConversationService
-from ..agents.unified_agent_service import UnifiedAgentService
+from ..agents.unified_agent import EnhancedUnifiedAgentService as UnifiedAgentService
 from .base_handler import BaseHandler
 
 

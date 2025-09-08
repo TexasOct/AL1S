@@ -200,12 +200,74 @@ class ChatHandler(BaseHandler):
 
         return text
 
+    def _markdown_to_telegram_html(self, text: str) -> str:
+        """将常见的Markdown语法转换为Telegram支持的HTML。
+        - 支持元素：粗体、斜体、删除线、行内代码、代码块、链接、简单列表、标题
+        - 不生成不被Telegram支持的标签（如 ul/ol/li/br 等）
+        """
+        if not text:
+            return text
+
+        import re
+        import html as _html
+
+        converted = text
+
+        # 1) 代码块 ```lang\n...\n```
+        def _codeblock_repl(match):
+            code = match.group(2) or ""
+            return f"<pre>{_html.escape(code)}</pre>"
+
+        converted = re.sub(r"```([a-zA-Z0-9_+\-]*)\n([\s\S]*?)```", _codeblock_repl, converted)
+
+        # 2) 行内代码 `code`
+        converted = re.sub(r"`([^`]+)`", lambda m: f"<code>{_html.escape(m.group(1))}</code>", converted)
+
+        # 3) 粗体 **text** 或 __text__
+        converted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", converted, flags=re.DOTALL)
+        converted = re.sub(r"__(.+?)__", r"<b>\1</b>", converted, flags=re.DOTALL)
+
+        # 4) 斜体 *text* 或 _text_
+        # 先处理不被粗体包裹的简单情况
+        converted = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", converted, flags=re.DOTALL)
+        converted = re.sub(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", r"<i>\1</i>", converted, flags=re.DOTALL)
+
+        # 5) 删除线 ~~text~~
+        converted = re.sub(r"~~(.+?)~~", r"<s>\1</s>", converted, flags=re.DOTALL)
+
+        # 6) 链接 [text](url)
+        def _link_repl(match):
+            label = match.group(1)
+            url = match.group(2)
+            # 仅允许 http/https 链接
+            if not url.lower().startswith(("http://", "https://")):
+                return label
+            return f"<a href=\"{_html.escape(url)}\">{_html.escape(label)}</a>"
+
+        converted = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", _link_repl, converted)
+
+        # 7) 标题 # / ## / ... -> 粗体行
+        def _heading_repl(match):
+            content = match.group(2).strip()
+            return f"<b>{_html.escape(content)}</b>\n"
+
+        converted = re.sub(r"^(#{1,6})\s+(.*)$", _heading_repl, converted, flags=re.MULTILINE)
+
+        # 8) 列表项 - / * / 1. -> 使用 \u2022 项符号
+        converted = re.sub(r"^\s*[-\*]\s+", "• ", converted, flags=re.MULTILINE)
+        converted = re.sub(r"^\s*\d+\.\s+", "• ", converted, flags=re.MULTILINE)
+
+        return converted
+
     def _format_response(self, text: str, role_name: str = None) -> str:
         """格式化响应文本，添加Telegram富文本支持"""
         if not text:
             return text
 
-        # 首先格式化LLM返回的内容
+        # 先将可能的Markdown内容转换为Telegram支持的HTML
+        text = self._markdown_to_telegram_html(text)
+
+        # 再清理并确保只包含支持的HTML标签
         text = self._format_llm_response(text)
 
         # 移除角色标识显示，让回复更自然
