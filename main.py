@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from loguru import logger
 
 from src.bot import AL1SBot
+from src.config import config
 
 
 def _cleanup_process_pools():
@@ -116,13 +117,26 @@ def signal_handler(signum, frame):
 def main():
     """主函数"""
     try:
-        # 配置日志
+        # 配置日志（根据配置中的 app.debug 决定级别）
+        debug_mode = bool(getattr(getattr(config, "app", None), "debug", False) or getattr(config, "debug", False))
+
+        # 移除默认控制台 sink（默认是 DEBUG）
+        logger.remove()
+
+        # 控制台输出
+        logger.add(
+            sys.stderr,
+            level="DEBUG" if debug_mode else "INFO",
+            enqueue=True,
+        )
+
+        # 文件输出
         logger.add(
             "logs/bot.log",
             rotation="1 day",
             retention="7 days",
-            level="INFO",
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}",
+            level="DEBUG" if debug_mode else "INFO",
+            enqueue=True,
         )
 
         logger.info("正在启动 AL1S-Bot...")

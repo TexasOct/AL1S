@@ -8,9 +8,8 @@ ENV PATH="/app/venv/bin:$PATH"
 
 # 复制项目文件
 COPY pyproject.toml ./
+COPY uv.lock ./
 COPY README.md ./
-COPY main.py ./
-COPY src/ ./src/
 
 # 合并系统依赖、Node.js、uv安装、版本验证和用户创建为单层
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -39,6 +38,9 @@ USER botuser
 # 创建虚拟环境并安装依赖（以botuser身份）
 RUN uv venv ./venv \
     && uv pip install --no-cache .
+
+COPY main.py ./
+COPY src/ ./src/
 
 # 健康检查 - 验证Python和Node.js环境
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

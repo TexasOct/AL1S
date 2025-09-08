@@ -126,11 +126,15 @@ class AppConfig:
         # 初始化属性
         self.roles = {}
         self.default_role = "天童爱丽丝"
+        # 应用元信息
+        self.app = None  # 将在下方填充为 AppMetaConfig 实例
+        self.debug = False
 
         # 先加载统一配置文件
         config_data = self._load_unified_config()
 
         # 从TOML配置中提取各个配置部分
+        app_meta_config = config_data.get("app", {}) if config_data else {}
         openai_config = config_data.get("openai", {}) if config_data else {}
         telegram_config = config_data.get("telegram", {}) if config_data else {}
         ascii2d_config = config_data.get("ascii2d", {}) if config_data else {}
@@ -140,6 +144,26 @@ class AppConfig:
         lc_config = config_data.get("langchain", {}) if config_data else {}
 
         # 初始化各个配置对象，使用默认值填充缺失的配置
+        # 应用元配置（名称、版本、调试开关）
+        try:
+            from pydantic import BaseModel, Field  # 重新导入以消除静态检查警告
+
+            class AppMetaConfig(BaseModel):
+                name: str = Field("AL1S-Bot", description="应用名称")
+                version: str = Field("1.0.0", description="应用版本")
+                debug: bool = Field(False, description="是否启用调试日志")
+
+        except Exception:
+            # 非常规环境下的兜底（不应触发）
+            class AppMetaConfig:  # type: ignore
+                def __init__(self, name="AL1S-Bot", version="1.0.0", debug=False):
+                    self.name = name
+                    self.version = version
+                    self.debug = debug
+
+        self.app = AppMetaConfig(**app_meta_config)
+        self.debug = bool(getattr(self.app, "debug", False))
+
         self.openai = OpenAIConfig(**openai_config)
         self.telegram = TelegramConfig(**telegram_config)
         self.ascii2d = Ascii2DConfig(**ascii2d_config)
